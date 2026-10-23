@@ -29,7 +29,7 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v3
         with:
-          app-id: ${{ secrets.POTATOBOT_CLIENT_ID }}
+          client-id: ${{ secrets.POTATOBOT_CLIENT_ID }}
           private-key: ${{ secrets.POTATOBOT_APP_PRIVATE_KEY }}
           owner: rxc1441
           repositories: freebsd
