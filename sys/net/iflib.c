@@ -912,6 +912,25 @@ iflib_num_tx_descs(if_ctx_t ctx)
 	return (scctx->isc_ntxd[first_txq]);
 }
 
+static inline void
+prefetch(void *x)
+{
+#if defined(__i386__) || defined(__amd64__)
+	__asm volatile("prefetcht0 %0" :: "m" (*(unsigned long *)x));
+#else
+	__builtin_prefetch(x);
+#endif
+}
+
+static inline void
+prefetch2cachelines(void *x)
+{
+	prefetch(x);
+#if (CACHE_LINE_SIZE < 128)
+	prefetch((char *)x + CACHE_LINE_SIZE);
+#endif
+}
+
 #ifdef DEV_NETMAP
 #include <sys/selinfo.h>
 #include <net/netmap.h>
@@ -1194,9 +1213,9 @@ iflib_netmap_txsync(struct netmap_kring *kring, int flags)
 		pi.ipi_qsidx = kring->ring_id;
 		nic_i = netmap_idx_k2n(kring, nm_i);
 
-		__builtin_prefetch(&ring->slot[nm_i]);
-		__builtin_prefetch(&txq->ift_sds.ifsd_m[nic_i]);
-		__builtin_prefetch(&txq->ift_sds.ifsd_map[nic_i]);
+		prefetch(&ring->slot[nm_i]);
+		prefetch(&txq->ift_sds.ifsd_m[nic_i]);
+		prefetch(&txq->ift_sds.ifsd_map[nic_i]);
 
 		while (nm_i != head) {
 			struct netmap_slot *slot = &ring->slot[nm_i];
@@ -1244,9 +1263,9 @@ iflib_netmap_txsync(struct netmap_kring *kring, int flags)
 			}
 
 			/* prefetch for next round */
-			__builtin_prefetch(&ring->slot[nm_i + 1]);
-			__builtin_prefetch(&txq->ift_sds.ifsd_m[nic_i + 1]);
-			__builtin_prefetch(&txq->ift_sds.ifsd_map[nic_i + 1]);
+			prefetch(&ring->slot[nm_i + 1]);
+			prefetch(&txq->ift_sds.ifsd_m[nic_i + 1]);
+			prefetch(&txq->ift_sds.ifsd_map[nic_i + 1]);
 
 			NM_CHECK_ADDR_LEN_OFF(na, len, offset);
 
@@ -1546,33 +1565,6 @@ iflib_netmap_timer(void *arg)
 
 #define iflib_netmap_attach(ctx) (0)
 #define netmap_rx_irq(ifp, qid, budget) (0)
-#endif
-
-#if defined(__i386__) || defined(__amd64__)
-static __inline void
-prefetch(void *x)
-{
-	__asm volatile("prefetcht0 %0" :: "m" (*(unsigned long *)x));
-}
-
-static __inline void
-prefetch2cachelines(void *x)
-{
-	__asm volatile("prefetcht0 %0" :: "m" (*(unsigned long *)x));
-#if (CACHE_LINE_SIZE < 128)
-	__asm volatile("prefetcht0 %0" :: "m" (*(((unsigned long *)x) + CACHE_LINE_SIZE / (sizeof(unsigned long)))));
-#endif
-}
-#else
-static __inline void
-prefetch(void *x)
-{
-}
-
-static __inline void
-prefetch2cachelines(void *x)
-{
-}
 #endif
 
 static void
@@ -3282,6 +3274,7 @@ iflib_rxeof(iflib_rxq_t rxq, qidx_t budget)
 	struct if_rxd_info ri;
 	int err, budget_left, rx_bytes, rx_pkts;
 	iflib_fl_t fl;
+	bool rx_err;
 #if defined(INET6) || defined(INET)
 	int lro_enabled;
 #endif
@@ -3297,6 +3290,7 @@ iflib_rxeof(iflib_rxq_t rxq, qidx_t budget)
 
 	ifp = ctx->ifc_ifp;
 	mh = mt = NULL;
+	rx_err = false;
 	MPASS(budget > 0);
 	rx_pkts	= rx_bytes = 0;
 	if (sctx->isc_flags & IFLIB_HAS_RXCQ)
@@ -3331,9 +3325,9 @@ iflib_rxeof(iflib_rxq_t rxq, qidx_t budget)
 		ri.iri_frags = rxq->ifr_frags;
 		err = ctx->isc_rxd_pkt_get(ctx->ifc_softc, &ri);
 
-		if (err) {
-			CURVNET_RESTORE();
-			goto err;
+		if (__predict_false(err != 0)) {
+			rx_err = true;
+			break;
 		}
 		rx_pkts += 1;
 		rx_bytes += ri.iri_len;
@@ -3380,8 +3374,10 @@ iflib_rxeof(iflib_rxq_t rxq, qidx_t budget)
 	}
 	CURVNET_RESTORE();
 	/* make sure that we can refill faster than drain */
-	for (i = 0, fl = &rxq->ifr_fl[0]; i < sctx->isc_nfl; i++, fl++)
-		retval |= iflib_fl_refill_all(ctx, fl);
+	if (__predict_true(!rx_err)) {
+		for (i = 0, fl = &rxq->ifr_fl[0]; i < sctx->isc_nfl; i++, fl++)
+			retval |= iflib_fl_refill_all(ctx, fl);
+	}
 
 	if (mh != NULL) {
 		if_input(ifp, mh);
@@ -3397,15 +3393,16 @@ iflib_rxeof(iflib_rxq_t rxq, qidx_t budget)
 #if defined(INET6) || defined(INET)
 	tcp_lro_flush_all(&rxq->ifr_lc);
 #endif
+	if (__predict_false(rx_err)) {
+		STATE_LOCK(ctx);
+		ctx->ifc_flags |= IFC_DO_RESET;
+		iflib_admin_intr_deferred(ctx);
+		STATE_UNLOCK(ctx);
+		return (0);
+	}
 	if (avail != 0 || iflib_rxd_avail(ctx, rxq, *cidxp, 1) != 0)
 		retval |= IFLIB_RXEOF_MORE;
 	return (retval);
-err:
-	STATE_LOCK(ctx);
-	ctx->ifc_flags |= IFC_DO_RESET;
-	iflib_admin_intr_deferred(ctx);
-	STATE_UNLOCK(ctx);
-	return (0);
 }
 
 #define TXD_NOTIFY_COUNT(txq) (((txq)->ift_size / (txq)->ift_update_freq) - 1)
@@ -3457,28 +3454,36 @@ iflib_txd_db_check(iflib_txq_t txq, int ring)
 	if_ctx_t ctx = txq->ift_ctx;
 	qidx_t dbval, max;
 
+	/*
+	 * Nothing has been queued since the last doorbell.  The threshold is
+	 * zero for a lightly used ring, so the test below would not catch this.
+	 */
+	if (txq->ift_db_pending == 0)
+		return (false);
+
 	max = TXQ_MAX_DB_DEFERRED(txq, txq->ift_in_use);
 
-	/* force || threshold exceeded || at the edge of the ring */
-	if (ring || (txq->ift_db_pending >= max) || (TXQ_AVAIL(txq) <= MAX_TX_DESC(ctx))) {
+	/* Defer unless forced, at the threshold or at the edge of the ring. */
+	if (!ring && txq->ift_db_pending < max &&
+	    TXQ_AVAIL(txq) > MAX_TX_DESC(ctx))
+		return (false);
 
-		/*
-		 * 'npending' is used if the card's doorbell is in terms of the number of descriptors
-		 * pending flush (BRCM). 'pidx' is used in cases where the card's doorbeel uses the
-		 * producer index explicitly (INTC).
-		 */
-		dbval = txq->ift_npending ? txq->ift_npending : txq->ift_pidx;
-		bus_dmamap_sync(txq->ift_ifdi->idi_tag, txq->ift_ifdi->idi_map,
-		    BUS_DMASYNC_PREREAD | BUS_DMASYNC_PREWRITE);
-		ctx->isc_txd_flush(ctx->ifc_softc, txq->ift_id, dbval);
+	/*
+	 * 'npending' is used if the card's doorbell is in terms of the number
+	 * of descriptors pending flush (BRCM). 'pidx' is used in cases where
+	 * the card's doorbell uses the producer index explicitly (INTC).
+	 */
+	dbval = txq->ift_npending ? txq->ift_npending : txq->ift_pidx;
+	bus_dmamap_sync(txq->ift_ifdi->idi_tag, txq->ift_ifdi->idi_map,
+	    BUS_DMASYNC_PREREAD | BUS_DMASYNC_PREWRITE);
+	ctx->isc_txd_flush(ctx->ifc_softc, txq->ift_id, dbval);
 
-		/*
-		 * Absent bugs there are zero packets pending so reset pending counts to zero.
-		 */
-		txq->ift_db_pending = txq->ift_npending = 0;
-		return (true);
-	}
-	return (false);
+	/*
+	 * Absent bugs there are zero packets pending so reset pending counts
+	 * to zero.
+	 */
+	txq->ift_db_pending = txq->ift_npending = 0;
+	return (true);
 }
 
 #ifdef PKT_DEBUG

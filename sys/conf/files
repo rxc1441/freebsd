@@ -736,6 +736,9 @@ dev/aacraid/aacraid.c		optional aacraid
 dev/aacraid/aacraid_cam.c	optional aacraid scbus
 dev/aacraid/aacraid_debug.c	optional aacraid
 dev/aacraid/aacraid_pci.c	optional aacraid pci
+dev/acpi_apple/acpi_apple.c	optional acpi_apple acpi pci backlight
+dev/acpi_apple/acpi_apple_bl.c	optional acpi_apple acpi pci backlight
+dev/acpi_apple/acpi_apple_platform.c optional acpi_apple acpi pci backlight
 dev/acpi_support/acpi_wmi.c	optional acpi_wmi acpi
 dev/acpi_support/acpi_asus.c	optional acpi_asus acpi
 dev/acpi_support/acpi_asus_wmi.c	optional acpi_asus_wmi acpi
@@ -1332,6 +1335,9 @@ dev/bnxt/bnxt_en/bnxt_ulp.c		optional bnxt iflib pci compile-with "${BNXT_C}"
 dev/bnxt/bnxt_en/bnxt_log.c		optional bnxt iflib pci compile-with "${BNXT_C}"
 dev/bnxt/bnxt_en/bnxt_log_data.c	optional bnxt iflib pci compile-with "${BNXT_C}"
 dev/bnxt/bnxt_en/bnxt_coredump.c	optional bnxt iflib pci compile-with "${BNXT_C}"
+dev/bnxt/bnxt_en/bnxt_ptp.c		optional bnxt iflib pci compile-with "${BNXT_C}"
+dev/bnxt/bnxt_en/bnxt_mpc.c		optional bnxt iflib pci compile-with "${BNXT_C}"
+dev/bnxt/bnxt_en/bnxt_ktls.c		optional bnxt iflib pci compile-with "${BNXT_C}"
 dev/bnxt/bnxt_en/if_bnxt.c		optional bnxt iflib pci compile-with "${BNXT_C}"
 dev/bwi/bwimac.c		optional bwi
 dev/bwi/bwiphy.c		optional bwi
@@ -3594,13 +3600,13 @@ dev/vt/vt_font.c		optional vt
 dev/vt/vt_sysmouse.c		optional vt
 dev/vte/if_vte.c		optional vte pci
 dev/watchdog/watchdog.c		standard
-dev/wg/if_wg.c			optional wg				\
+dev/wg/if_wg.c			optional wg inet | wg inet6		\
 	compile-with "${NORMAL_C} -include $S/dev/wg/compat.h"
-dev/wg/wg_cookie.c		optional wg				\
+dev/wg/wg_cookie.c		optional wg inet | wg inet6		\
 	compile-with "${NORMAL_C} -include $S/dev/wg/compat.h"
-dev/wg/wg_crypto.c		optional wg				\
+dev/wg/wg_crypto.c		optional wg inet | wg inet6		\
 	compile-with "${NORMAL_C} -include $S/dev/wg/compat.h"
-dev/wg/wg_noise.c		optional wg				\
+dev/wg/wg_noise.c		optional wg inet | wg inet6		\
 	compile-with "${NORMAL_C} -include $S/dev/wg/compat.h"
 dev/wpi/if_wpi.c		optional wpi pci
 wpifw.c			optional wpifw					\

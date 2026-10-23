@@ -118,7 +118,7 @@ enum pfstate_peer_type_t {
 
 enum pfstate_type_t {
 	PF_ST_UNSPEC,
-	PF_ST_ID		= 1, /* u32, state id */
+	PF_ST_ID		= 1, /* u64, state id */
 	PF_ST_CREATORID		= 2, /* u32, */
 	PF_ST_IFNAME		= 3, /* string */
 	PF_ST_ORIG_IFNAME	= 4, /* string */
@@ -607,6 +607,7 @@ enum pf_ina_define_t {
 	PF_ID_ADDR		= 4, /* pfr_addr */
 	PF_ID_NADD		= 5, /* u32 */
 	PF_ID_NADDR		= 6, /* u32 */
+	PF_ID_APPEND		= 7, /* bool */
 };
 
 enum pf_osfp_t {

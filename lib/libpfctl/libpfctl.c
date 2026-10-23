@@ -1917,6 +1917,8 @@ static const struct snl_attr_parser nla_p_speer[] = {
 	{ .type = PF_STP_SEQLO, .off = _OUT(seqlo), .cb = snl_attr_get_uint32 },
 	{ .type = PF_STP_SEQHI, .off = _OUT(seqhi), .cb = snl_attr_get_uint32 },
 	{ .type = PF_STP_SEQDIFF, .off = _OUT(seqdiff), .cb = snl_attr_get_uint32 },
+	{ .type = PF_STP_MAX_WIN, .off = _OUT(max_win), .cb = snl_attr_get_uint16 },
+	{ .type = PF_STP_MSS, .off = _OUT(mss), .cb = snl_attr_get_uint16 },
 	{ .type = PF_STP_STATE, .off = _OUT(state), .cb = snl_attr_get_uint8 },
 	{ .type = PF_STP_WSCALE, .off = _OUT(wscale), .cb = snl_attr_get_uint8 },
 };
@@ -2025,72 +2027,6 @@ pfctl_get_states_h(struct pfctl_handle *h, struct pfctl_state_filter *filter, pf
 out:
 	snl_clear_lb(&h->ss);
 	return (ret);
-}
-
-int
-pfctl_get_states_iter(pfctl_get_state_fn f, void *arg)
-{
-	struct pfctl_state_filter filter = {};
-	return (pfctl_get_filtered_states_iter(&filter, f, arg));
-}
-
-int
-pfctl_get_filtered_states_iter(struct pfctl_state_filter *filter, pfctl_get_state_fn f, void *arg)
-{
-	struct pfctl_handle h = {};
-	int error;
-
-	snl_init(&h.ss, NETLINK_GENERIC);
-	error = pfctl_get_states_h(&h, filter, f, arg);
-	snl_free(&h.ss);
-
-	return (error);
-}
-
-static int
-pfctl_append_states(struct pfctl_state *s, void *arg)
-{
-	struct pfctl_state *new;
-	struct pfctl_states *states = (struct pfctl_states *)arg;
-
-	new = malloc(sizeof(*s));
-	if (new == NULL)
-		return (ENOMEM);
-
-	memcpy(new, s, sizeof(*s));
-
-	TAILQ_INSERT_TAIL(&states->states, new, entry);
-
-	return (0);
-}
-
-int
-pfctl_get_states(int dev __unused, struct pfctl_states *states)
-{
-	int ret;
-
-	bzero(states, sizeof(*states));
-	TAILQ_INIT(&states->states);
-
-	ret = pfctl_get_states_iter(pfctl_append_states, states);
-	if (ret != 0) {
-		pfctl_free_states(states);
-		return (ret);
-	}
-
-	return (0);
-}
-
-void
-pfctl_free_states(struct pfctl_states *states)
-{
-	struct pfctl_state *s, *tmp;
-
-	TAILQ_FOREACH_SAFE(s, &states->states, entry, tmp) {
-		free(s);
-	}
-
-	bzero(states, sizeof(*states));
 }
 
 struct pfctl_nl_clear_states {
@@ -4108,7 +4044,7 @@ SNL_DECLARE_PARSER(ina_define_parser, struct genlmsghdr, snl_f_p_empty, ap_ina_d
 static int
 _pfctl_ina_define(struct pfctl_handle *h, struct pfr_table *tbl,
     struct pfr_addr *addr, int size, int *nadd, int *naddr,
-    int ticket, int flags)
+    int ticket, int flags, bool append)
 {
 	struct snl_writer nw;
 	struct snl_errmsg_data e = {};
@@ -4125,6 +4061,7 @@ _pfctl_ina_define(struct pfctl_handle *h, struct pfr_table *tbl,
 	snl_add_msg_attr_table(&nw, PF_ID_TABLE, tbl);
 	snl_add_msg_attr_u32(&nw, PF_ID_TICKET, ticket);
 	snl_add_msg_attr_u32(&nw, PF_ID_FLAGS, flags);
+	snl_add_msg_attr_bool(&nw, PF_ID_APPEND, append);
 	for (int i = 0; i < size; i++)
 		snl_add_msg_attr_pfr_addr(&nw, PF_ID_ADDR, &addr[i]);
 
@@ -4145,9 +4082,9 @@ _pfctl_ina_define(struct pfctl_handle *h, struct pfr_table *tbl,
 			continue;
 	}
 
-	if (*nadd)
+	if (nadd)
 		*nadd = attrs.nadd;
-	if (*naddr)
+	if (naddr)
 		*naddr = attrs.naddr;
 
 out:
@@ -4170,10 +4107,15 @@ pfctl_ina_define(struct pfctl_handle *h, struct pfr_table *tbl,
 	if (naddr)
 		*naddr = 0;
 
+	/*
+	 * The addresses go in chunks.  The first one defines the table, the
+	 * others add to it; without that, each would define it anew and
+	 * only the last would be left.
+	 */
 	do {
 		chunk_size = MIN(size - off, 256);
 		ret = _pfctl_ina_define(h, tbl, &addr[off], chunk_size,
-		    &partial_add, &partial_addr, ticket, flags);
+		    &partial_add, &partial_addr, ticket, flags, off > 0);
 		if (ret != 0)
 			break;
 		if (nadd)

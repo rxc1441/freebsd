@@ -40,9 +40,8 @@ tags
 .ccls-cache
 sys/*/compile
 /src.conf
-
+.tgrep
 # FreeBSD Development Branch
 capstone/
 venv/
 *.egg-info
-
