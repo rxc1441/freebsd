@@ -1739,6 +1739,7 @@ dev/fdt/fdt_clock_if.m		optional fdt fdt_clock
 dev/fdt/fdt_common.c		optional fdt
 dev/fdt/fdt_pinctrl.c		optional fdt fdt_pinctrl
 dev/fdt/fdt_pinctrl_if.m	optional fdt fdt_pinctrl
+dev/fdt/fdt_reserved_memory.c	optional fdt
 dev/fdt/fdt_slicer.c		optional fdt cfi | fdt mx25l | fdt n25q | fdt at45d
 dev/fdt/fdt_static_dtb.S	optional fdt fdt_dtb_static \
 	dependency	"${FDT_DTS_FILE:T:R}.dtb"
@@ -2963,6 +2964,17 @@ dev/rtwn/rtl8188e/pci/r88ee_init.c	optional rtwn_pci pci
 dev/rtwn/rtl8188e/pci/r88ee_rx.c	optional rtwn_pci pci
 dev/rtwn/rtl8188e/usb/r88eu_attach.c	optional rtwn_usb
 dev/rtwn/rtl8188e/usb/r88eu_init.c	optional rtwn_usb
+
+# RTL8188F
+dev/rtwn/rtl8188f/r88f_calib.c	optional rtwn
+dev/rtwn/rtl8188f/r88f_chan.c	optional rtwn
+dev/rtwn/rtl8188f/r88f_fw.c	optional rtwn
+dev/rtwn/rtl8188f/r88f_init.c	optional rtwn
+dev/rtwn/rtl8188f/r88f_rom.c	optional rtwn
+dev/rtwn/rtl8188f/r88f_rx.c	optional rtwn
+dev/rtwn/rtl8188f/usb/r88fu_attach.c	optional rtwn_usb
+dev/rtwn/rtl8188f/usb/r88fu_init.c	optional rtwn_usb
+
 # RTL8192C
 dev/rtwn/rtl8192c/r92c_attach.c	optional rtwn
 dev/rtwn/rtl8192c/r92c_beacon.c	optional rtwn
