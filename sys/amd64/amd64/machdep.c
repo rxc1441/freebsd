@@ -210,10 +210,29 @@ int ia32_splitlock = 0;
 SYSCTL_INT(_hw, OID_AUTO, splitlock, CTLFLAG_RD,
     &ia32_splitlock, 0,
     "splitlock prevention supported");
+
 int ia32_splitlock_force = 1;
-SYSCTL_INT(_hw, OID_AUTO, splitlock_force, CTLFLAG_RDTUN | CTLFLAG_NOFETCH,
-    &ia32_splitlock_force, 0,
-    "splitlock prevention enabled by default");
+
+static int
+sysctl_hw_splitlock_force_proc(SYSCTL_HANDLER_ARGS)
+{
+	int error, val;
+
+	val = ia32_splitlock_force;
+	error = sysctl_handle_int(oidp, &val, 0, req);
+	if (error != 0 || req->newptr == NULL)
+		return (error);
+	if (val != 0 && !ia32_splitlock)
+		error = ENOTSUP;
+	else
+		ia32_splitlock_force = val != 0;
+	return (error);
+}
+
+SYSCTL_PROC(_hw, OID_AUTO, splitlock_force,
+    CTLTYPE_INT | CTLFLAG_RWTUN | CTLFLAG_NOFETCH | CTLFLAG_MPSAFE, 0, 0,
+    sysctl_hw_splitlock_force_proc, "I",
+    "Splitlock prevention enabled on exec");
 
 int __read_frequently fred = 0;
 SYSCTL_INT(_hw, OID_AUTO, fred, CTLFLAG_RDTUN | CTLFLAG_NOFETCH,
@@ -1228,6 +1247,7 @@ amd64_bsp_pcpu_init1(struct pcpu *pc)
 	PCPU_SET(gs32p, &gdt[GUGS32_SEL]);
 	PCPU_SET(ucr3_load_mask, PMAP_UCR3_NOMASK);
 	PCPU_SET(smp_tlb_gen, 1);
+	cpu_init_small_core();
 }
 
 void
@@ -1380,13 +1400,8 @@ hammer_time(u_int64_t modulep, u_int64_t physfree)
 		pmap_pcid_enabled = 0;
 	invpcid_works = (cpu_stdext_feature & CPUID_STDEXT_INVPCID) != 0;
 
-	/*
-	 * Now we can do small core initialization, after the PCID
-	 * CPU features and user knobs are evaluated.
-	 */
 	TUNABLE_INT_FETCH("vm.pmap.pcid_invlpg_workaround",
 	    &pmap_pcid_invlpg_workaround_uena);
-	cpu_init_small_core();
 
 	if ((cpu_feature2 & CPUID2_XSAVE) != 0) {
 		use_xsave = 1;

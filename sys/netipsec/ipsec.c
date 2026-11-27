@@ -159,6 +159,8 @@ VNET_DEFINE(int, crypto_support) = CRYPTOCAP_F_HARDWARE | CRYPTOCAP_F_SOFTWARE;
  *  1 - enabled
  */
 VNET_DEFINE(int, async_crypto) = 0;
+/* Derive the flow ID of outbound packets from the SA: one SA, one queue. */
+VNET_DEFINE(int, sa_flowid) = 1;
 
 /*
  * TCP/UDP checksum handling policy for transport mode NAT-T (RFC3948)
@@ -211,6 +213,9 @@ SYSCTL_INT(_net_inet_ipsec, OID_AUTO, crypto_support,
 SYSCTL_INT(_net_inet_ipsec, OID_AUTO, async_crypto,
 	CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(async_crypto), 0,
 	"Use asynchronous mode to parallelize crypto jobs.");
+SYSCTL_INT(_net_inet_ipsec, OID_AUTO, sa_flowid,
+	CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(sa_flowid), 0,
+	"Derive the flow ID of outbound packets from the SA.");
 SYSCTL_INT(_net_inet_ipsec, OID_AUTO, check_policy_history,
 	CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(check_policy_history), 0,
 	"Use strict check of inbound packets to security policy compliance.");
@@ -568,6 +573,13 @@ ipsec4_setspidx_ipaddr(const struct mbuf *m, struct ip *ip1,
 	spidx->prefd = sizeof(struct in_addr) << 3;
 }
 
+/*
+ * Return a held reference to the SP for the packet.  Return NULL when no
+ * SP matches and there is no PCB: the default policy applies then, and
+ * the caller checks its type, NONE or DISCARD.  The default SP lives as
+ * long as its vnet, so that needs no reference, and the reference count
+ * would be one cache line written by every CPU for each forwarded packet.
+ */
 static struct secpolicy *
 ipsec4_getpolicy(const struct mbuf *m, struct inpcb *inp, struct ip *ip1,
     u_int dir, int needport)
@@ -583,7 +595,8 @@ ipsec4_getpolicy(const struct mbuf *m, struct inpcb *inp, struct ip *ip1,
 		spidx.dir = dir;
 		sp = key_allocsp(&spidx, dir);
 	}
-	if (sp == NULL)		/* No SP found, use system default. */
+	/* No SP found, the PCB caches the system default. */
+	if (sp == NULL && inp != NULL)
 		sp = key_allocsp_default();
 	return (sp);
 }
@@ -601,6 +614,8 @@ ipsec4_checkpolicy(const struct mbuf *m, struct inpcb *inp, struct ip *ip1,
 	sp = ipsec4_getpolicy(m, inp, ip1, IPSEC_DIR_OUTBOUND, needport);
 	if (sp != NULL)
 		sp = ipsec_checkpolicy(sp, inp, error);
+	else if (V_def_policy->policy == IPSEC_POLICY_DISCARD)
+		*error = -EINVAL;	/* Packet is discarded by caller. */
 	if (sp == NULL) {
 		switch (*error) {
 		case 0: /* No IPsec required: BYPASS or NONE */
@@ -648,8 +663,11 @@ ipsec4_in_reject1(const struct mbuf *m, struct ip *ip1, struct inpcb *inp)
 	}
 
 	sp = ipsec4_getpolicy(m, inp, ip1, IPSEC_DIR_INBOUND, 0);
-	result = ipsec_in_reject(sp, inp, m);
-	key_freesp(&sp);
+	if (sp != NULL) {
+		result = ipsec_in_reject(sp, inp, m);
+		key_freesp(&sp);
+	} else
+		result = (V_def_policy->policy == IPSEC_POLICY_DISCARD);
 	if (result != 0)
 		IPSECSTAT_INC(ips_in_polvio);
 	return (result);
@@ -757,6 +775,11 @@ ipsec6_setspidx_ipaddr(const struct mbuf *m, struct secpolicyindex *spidx)
 	spidx->prefd = sizeof(struct in6_addr) << 3;
 }
 
+/*
+ * Return a held reference to the SP for the packet.  Return NULL when no
+ * SP matches and there is no PCB: the default policy applies then, and
+ * the caller checks its type without a reference, see ipsec4_getpolicy().
+ */
 static struct secpolicy *
 ipsec6_getpolicy(const struct mbuf *m, struct inpcb *inp, u_int dir,
     int needport)
@@ -772,7 +795,8 @@ ipsec6_getpolicy(const struct mbuf *m, struct inpcb *inp, u_int dir,
 		spidx.dir = dir;
 		sp = key_allocsp(&spidx, dir);
 	}
-	if (sp == NULL)		/* No SP found, use system default. */
+	/* No SP found, the PCB caches the system default. */
+	if (sp == NULL && inp != NULL)
 		sp = key_allocsp_default();
 	return (sp);
 }
@@ -790,6 +814,8 @@ ipsec6_checkpolicy(const struct mbuf *m, struct inpcb *inp, int *error,
 	sp = ipsec6_getpolicy(m, inp, IPSEC_DIR_OUTBOUND, needport);
 	if (sp != NULL)
 		sp = ipsec_checkpolicy(sp, inp, error);
+	else if (V_def_policy->policy == IPSEC_POLICY_DISCARD)
+		*error = -EINVAL;	/* Packet is discarded by caller. */
 	if (sp == NULL) {
 		switch (*error) {
 		case 0: /* No IPsec required: BYPASS or NONE */
@@ -828,8 +854,11 @@ ipsec6_in_reject(const struct mbuf *m, struct inpcb *inp)
 		return (0);
 #endif
 	sp = ipsec6_getpolicy(m, inp, IPSEC_DIR_INBOUND, 0);
-	result = ipsec_in_reject(sp, inp, m);
-	key_freesp(&sp);
+	if (sp != NULL) {
+		result = ipsec_in_reject(sp, inp, m);
+		key_freesp(&sp);
+	} else
+		result = (V_def_policy->policy == IPSEC_POLICY_DISCARD);
 	if (result)
 		IPSEC6STAT_INC(ips_in_polvio);
 	return (result);
@@ -1507,7 +1536,7 @@ ipsec_updatereplay(uint32_t seq, struct secasvar *sav)
 	SECREPLAY_UNLOCK(replay);
 	return (0);
 }
-int
+static int
 ipsec_updateid(struct secasvar *sav, crypto_session_t *new,
     crypto_session_t *old)
 {
@@ -1552,6 +1581,23 @@ ipsec_updateid(struct secasvar *sav, crypto_session_t *new,
 	sav->tdb_cryptoid = *new;
 	SECASVAR_WUNLOCK(sav);
 	return (0);
+}
+
+/*
+ * Prepare a request that failed with EAGAIN to be dispatched again.
+ * The caller must release its locks before it dispatches the request.
+ */
+void
+ipsec_crypto_retry(struct secasvar *sav, struct xform_data *xd,
+    struct cryptop *crp)
+{
+	crypto_session_t cryptoid;
+
+	cryptoid = xd->cryptoid;
+	if (ipsec_updateid(sav, &crp->crp_session, &cryptoid) != 0)
+		crypto_freesession(cryptoid);
+	xd->cryptoid = crp->crp_session;
+	crp->crp_etype = 0;
 }
 
 int

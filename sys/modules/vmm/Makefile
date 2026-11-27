@@ -40,6 +40,7 @@ SRCS+=	vgic.c \
 	vgic_if.h \
 	vgic_if.c \
 	vgic_v3.c \
+	vgic_v5.c \
 	vtimer.c
 
 CLEANFILES+=	vmm_nvhe_exception.o vmm_nvhe.o
@@ -87,7 +88,8 @@ SRCS+=	opt_acpi.h		\
 	opt_bhyve_snapshot.h	\
 	opt_ddb.h
 
-SRCS+=	vmm_host.c	\
+SRCS+=	vmm_cpuid.c	\
+	vmm_host.c	\
 	vmm_ioport.c	\
 	vmm_lapic.c	\
 	vmm_mem_machdep.c \

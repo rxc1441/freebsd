@@ -326,6 +326,7 @@ contrib/openzfs/module/zfs/u8_textprep.c           optional zfs compile-with "${
 contrib/openzfs/module/zfs/uberblock.c		optional zfs compile-with "${ZFS_C}"
 contrib/openzfs/module/zfs/unique.c		optional zfs compile-with "${ZFS_C}"
 contrib/openzfs/module/zfs/vdev.c		optional zfs compile-with "${ZFS_C}"
+contrib/openzfs/module/zfs/vdev_anyraid.c	optional zfs compile-with "${ZFS_C}"
 contrib/openzfs/module/zfs/vdev_draid.c		optional zfs compile-with "${ZFS_C}"
 contrib/openzfs/module/zfs/vdev_draid_rand.c		optional zfs compile-with "${ZFS_C}"
 contrib/openzfs/module/zfs/vdev_file.c		optional zfs compile-with "${ZFS_C}"
@@ -1374,7 +1375,7 @@ dev/clk/clkdev_if.m		optional clk
 dev/clk/clknode_if.m		optional clk
 dev/clk/clk_bus.c		optional clk fdt
 dev/clk/clk_div.c		optional clk
-dev/clk/clk_fixed.c		optional clk
+dev/clk/clk_fixed.c		optional clk fdt
 dev/clk/clk_gate.c		optional clk
 dev/clk/clk_link.c		optional clk
 dev/clk/clk_mux.c		optional clk
@@ -4721,7 +4722,7 @@ kern/sched_4bsd.c		optional sched_4bsd
 sched_4bsd_ns.h			optional sched_4bsd \
 	dependency		"$S/kern/sched_ns.h $S/sys/sched.h \
 	$S/tools/sched_impl_ns.awk" \
-	compile-with		"${CPP} ${INCLUDES} -DSCHED_IMPLEMENTATION=4bsd \
+	compile-with		"${CPP} ${CPPFLAGS} -DSCHED_IMPLEMENTATION=4bsd \
 	$S/kern/sched_ns.h | \
 	${AWK} -f $S/tools/sched_impl_ns.awk > ${.TARGET}" \
 	no-obj no-implicit-rule before-depend local \
@@ -4730,7 +4731,7 @@ kern/sched_ule.c		optional sched_ule
 sched_ule_ns.h			optional sched_ule \
 	dependency		"$S/kern/sched_ns.h $S/sys/sched.h \
 	$S/tools/sched_impl_ns.awk" \
-	compile-with		"${CPP} ${INCLUDES} -DSCHED_IMPLEMENTATION=ule \
+	compile-with		"${CPP} ${CPPFLAGS} -DSCHED_IMPLEMENTATION=ule \
 	$S/kern/sched_ns.h | \
 	${AWK} -f $S/tools/sched_impl_ns.awk > ${.TARGET}" \
 	no-obj no-implicit-rule before-depend local \
@@ -4928,6 +4929,11 @@ ofed/drivers/infiniband/ulp/ipoib/ipoib_verbs.c	optional ipoib		\
 	compile-with "${OFED_C} -I$S/ofed/drivers/infiniband/ulp/ipoib/"
 #ofed/drivers/infiniband/ulp/ipoib/ipoib_vlan.c	optional ipoib		\
 #	compile-with "${OFED_C} -I$S/ofed/drivers/infiniband/ulp/ipoib/"
+
+ofed/drivers/infiniband/ulp/nfsclrdma/clnt_rdma.c	optional nfscl ofed		\
+	compile-with "${OFED_C} -I$S/ofed/drivers/infiniband/ulp/nfsclrdma/"
+ofed/drivers/infiniband/ulp/nfsclrdma/xprt_verbs.c	optional nfscl ofed		\
+	compile-with "${OFED_C} -I$S/ofed/drivers/infiniband/ulp/nfsclrdma/"
 
 ofed/drivers/infiniband/ulp/sdp/sdp_bcopy.c	optional sdp inet	\
 	compile-with "${OFED_C} -I$S/ofed/drivers/infiniband/ulp/sdp/"

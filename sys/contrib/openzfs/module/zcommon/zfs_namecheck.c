@@ -302,6 +302,29 @@ dataset_namecheck(const char *path, namecheck_err_t *why, char *what)
 }
 
 /*
+ * Assert path is a valid name for a new clone: a dataset name with no
+ * snapshot delimiter and no '%', which is reserved for the temporary clones
+ * of online recv.
+ */
+int
+clone_namecheck(const char *path, namecheck_err_t *why, char *what)
+{
+	int ret = dataset_namecheck(path, why, what);
+	const char *bad;
+
+	if (ret == 0 && ((bad = strchr(path, '@')) != NULL ||
+	    (bad = strchr(path, '%')) != NULL)) {
+		if (why != NULL) {
+			*why = NAME_ERR_INVALCHAR;
+			*what = *bad;
+		}
+		return (-1);
+	}
+
+	return (ret);
+}
+
+/*
  * Assert path is a valid bookmark name
  */
 int
@@ -433,7 +456,9 @@ pool_namecheck(const char *pool, namecheck_err_t *why, char *what)
 
 	if (strcmp(pool, "mirror") == 0 ||
 	    strcmp(pool, "raidz") == 0 ||
-	    strcmp(pool, "draid") == 0) {
+	    strcmp(pool, "draid") == 0 ||
+	    strcmp(pool, "anymirror") == 0 ||
+	    strcmp(pool, "anyraid") == 0) {
 		if (why)
 			*why = NAME_ERR_RESERVED;
 		return (-1);
@@ -445,6 +470,7 @@ pool_namecheck(const char *pool, namecheck_err_t *why, char *what)
 EXPORT_SYMBOL(entity_namecheck);
 EXPORT_SYMBOL(pool_namecheck);
 EXPORT_SYMBOL(dataset_namecheck);
+EXPORT_SYMBOL(clone_namecheck);
 EXPORT_SYMBOL(bookmark_namecheck);
 EXPORT_SYMBOL(snapshot_namecheck);
 EXPORT_SYMBOL(zfs_component_namecheck);

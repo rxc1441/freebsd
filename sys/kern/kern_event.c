@@ -123,10 +123,6 @@ static int	kqueue_scan(struct kqueue *kq, int maxevents,
 static void 	kqueue_wakeup(struct kqueue *kq);
 static const struct filterops *kqueue_fo_find(int filt);
 static void	kqueue_fo_release(int filt);
-struct g_kevent_args;
-static int	kern_kevent_generic(struct thread *td,
-		    struct g_kevent_args *uap,
-		    struct kevent_copyops *k_ops, const char *struct_name);
 
 static fo_ioctl_t	kqueue_ioctl;
 static fo_poll_t	kqueue_poll;
@@ -812,7 +808,8 @@ struct kq_timer_cb_data {
 	sbintime_t to;		/* precalculated timer period, 0 for abs */
 };
 
-#define	KQ_TIMER_CB_ENQUEUED	0x01
+#define	KQ_TIMER_CB_ENQUEUED	0x01	/* in queue of stopped timers */
+#define	KQ_TIMER_CB_DETACHING	0x02	/* detach started, don't requeue */
 
 static void
 kqtimer_sched_callout(struct kq_timer_cb_data *kc)
@@ -880,7 +877,8 @@ filt_timerexpire_l(struct knote *kn, bool proc_locked)
 		if (!proc_locked)
 			PROC_LOCK(p);
 		if (P_SHOULDSTOP(p) || P_KILLED(p)) {
-			if ((kc->flags & KQ_TIMER_CB_ENQUEUED) == 0) {
+			if ((kc->flags & (KQ_TIMER_CB_ENQUEUED |
+			    KQ_TIMER_CB_DETACHING)) == 0) {
 				/*
 				 * Insert into head so that
 				 * kqtimer_proc_continue() does not
@@ -987,7 +985,8 @@ filt_timercopy(struct knote *kn, struct proc *p)
 	kn->kn_ptr.p_v = kc = malloc(sizeof(*kc), M_KQUEUE, M_WAITOK);
 	kc->kn = kn;
 	kc->p = p;
-	kc->flags = kc_src->flags & ~KQ_TIMER_CB_ENQUEUED;
+	kc->flags = kc_src->flags &
+	    ~(KQ_TIMER_CB_ENQUEUED | KQ_TIMER_CB_DETACHING);
 	kc->next = kc_src->next;
 	kc->to = kc_src->to;
 	kc->cpuid = PCPU_GET(cpuid);
@@ -1017,24 +1016,16 @@ filt_timerdetach(struct knote *kn)
 {
 	struct kq_timer_cb_data *kc;
 	unsigned int old __unused;
-	bool pending;
 
 	kc = kn->kn_ptr.p_v;
-	do {
-		callout_drain(&kc->c);
-
-		/*
-		 * kqtimer_proc_continue() might have rescheduled this callout.
-		 * Double-check, using the process mutex as an interlock.
-		 */
-		PROC_LOCK(kc->p);
-		if ((kc->flags & KQ_TIMER_CB_ENQUEUED) != 0) {
-			kc->flags &= ~KQ_TIMER_CB_ENQUEUED;
-			TAILQ_REMOVE(&kc->p->p_kqtim_stop, kc, link);
-		}
-		pending = callout_pending(&kc->c);
-		PROC_UNLOCK(kc->p);
-	} while (pending);
+	PROC_LOCK(kc->p);
+	kc->flags |= KQ_TIMER_CB_DETACHING;
+	if ((kc->flags & KQ_TIMER_CB_ENQUEUED) != 0) {
+		kc->flags &= ~KQ_TIMER_CB_ENQUEUED;
+		TAILQ_REMOVE(&kc->p->p_kqtim_stop, kc, link);
+	}
+	PROC_UNLOCK(kc->p);
+	callout_drain(&kc->c);
 	free(kc, M_KQUEUE);
 	old = atomic_fetchadd_int(&kq_ncallouts, -1);
 	KASSERT(old > 0, ("Number of callouts cannot become negative"));
@@ -1291,15 +1282,6 @@ kern_kqueue(struct thread *td, int flags, bool cponfork, struct filecaps *fcaps)
 	return (0);
 }
 
-struct g_kevent_args {
-	int	fd;
-	const void *changelist;
-	int	nchanges;
-	void	*eventlist;
-	int	nevents;
-	const struct timespec *timeout;
-};
-
 int
 sys_kevent(struct thread *td, struct kevent_args *uap)
 {
@@ -1321,7 +1303,7 @@ sys_kevent(struct thread *td, struct kevent_args *uap)
 	return (kern_kevent_generic(td, &gk_args, &k_ops, "kevent"));
 }
 
-static int
+int
 kern_kevent_generic(struct thread *td, struct g_kevent_args *uap,
     struct kevent_copyops *k_ops, const char *struct_name)
 {
@@ -3154,15 +3136,26 @@ kqueue_fork_copy_knote(struct kqueue *kq, struct kqueue *kq1, struct knote *kn,
 	KQ_UNLOCK(kq1);
 }
 
+enum klist_which {
+	KLIST_FD,
+	KLIST_HASH,
+};
+
+static struct klist *
+kqueue_list(struct kqueue *kq, enum klist_which which, int i)
+{
+	return (which == KLIST_FD ? &kq->kq_knlist[i] : &kq->kq_knhash[i]);
+}
+
 static void
-kqueue_fork_copy_list(struct klist *knlist, struct knote *marker,
+kqueue_fork_copy_list(enum klist_which which, int i, struct knote *marker,
     struct kqueue *kq, struct kqueue *kq1, struct proc *p1,
     struct filedesc *fdp)
 {
 	struct knote *kn;
 
 	KQ_OWNED(kq);
-	kn = SLIST_FIRST(knlist);
+	kn = SLIST_FIRST(kqueue_list(kq, which, i));
 	while (kn != NULL) {
 		MPASS(kn->kn_kq == kq);
 		if ((kn->kn_status & (KN_DETACHED | KN_MARKER)) != 0 ||
@@ -3178,7 +3171,7 @@ kqueue_fork_copy_list(struct klist *knlist, struct knote *marker,
 		kn_leave_flux(kn);
 		kn = SLIST_NEXT(marker, kn_link);
 		/* XXXKIB switch kn_link to LIST? */
-		SLIST_REMOVE(knlist, marker, knote, kn_link);
+		SLIST_REMOVE(kqueue_list(kq, which, i), marker, knote, kn_link);
 	}
 }
 
@@ -3202,13 +3195,12 @@ kqueue_fork_copy(struct filedesc *fdp, struct file *fp, struct file *fp1,
 
 	KQ_LOCK(kq);
 	for (i = 0; i < kq->kq_knlistsize; i++) {
-		kqueue_fork_copy_list(&kq->kq_knlist[i], &marker, kq, kq1,
-		    p1, fdp);
+		kqueue_fork_copy_list(KLIST_FD, i, &marker, kq, kq1, p1, fdp);
 	}
 	if (kq->kq_knhashmask != 0) {
 		for (i = 0; i <= kq->kq_knhashmask; i++) {
-			kqueue_fork_copy_list(&kq->kq_knhash[i], &marker, kq,
-			    kq1, p1, fdp);
+			kqueue_fork_copy_list(KLIST_HASH, i, &marker, kq, kq1,
+			    p1, fdp);
 		}
 	}
 	kqueue_release(kq, 1);

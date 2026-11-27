@@ -6394,6 +6394,8 @@ pmap_remove1(pmap_t pmap, vm_offset_t sva, vm_offset_t eva, bool map_delete)
 			MPASS(pmap != kernel_pmap); /* XXXKIB */
 			MPASS((*pdpe & (PG_MANAGED | PG_G)) == 0);
 			anyvalid = 1;
+			if ((*pdpe & PG_W) != 0)
+				pmap->pm_stats.wired_count -= NBPDP / PAGE_SIZE;
 			*pdpe = 0;
 			pmap_resident_count_adj(pmap, -NBPDP / PAGE_SIZE);
 			mt = PHYS_TO_VM_PAGE(*pmap_pml4e(pmap, sva) & PG_FRAME);
@@ -7034,7 +7036,6 @@ restart:
 			MPASS(origpte == 0);
 		} else {
 			pdpe = pmap_pml4e_to_pdpe(pml4e, va);
-			KASSERT(pdpe != NULL, ("va %#lx lost pdpe", va));
 			origpte = *pdpe;
 			if ((origpte & PG_V) == 0) {
 				mp = PHYS_TO_VM_PAGE(*pml4e & PG_FRAME);
@@ -7164,7 +7165,7 @@ pmap_enter(pmap_t pmap, vm_offset_t va, vm_page_t m, vm_prot_t prot,
 
 	lock = NULL;
 	PMAP_LOCK(pmap);
-	if ((flags & PMAP_ENTER_LARGEPAGE) != 0) {
+	if (__predict_false((flags & PMAP_ENTER_LARGEPAGE) != 0)) {
 		KASSERT((m->oflags & VPO_UNMANAGED) != 0,
 		    ("managed largepage va %#lx flags %#x", va, flags));
 		rv = pmap_enter_largepage(pmap, va, newpte | PG_PS, flags,

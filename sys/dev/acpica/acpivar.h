@@ -508,6 +508,9 @@ acpi_d_state_to_str(int state)
 char		*acpi_name(ACPI_HANDLE handle);
 int		acpi_avoid(ACPI_HANDLE handle);
 int		acpi_disabled(char *subsys);
+ssize_t		acpi_ad_get_property(struct acpi_device *ad,
+		    const char *propname, void *propvalue, size_t size,
+		    device_property_type_t type);
 int		acpi_get_acpi_device_path(device_t bus, device_t child,
 		    const char *locator, struct sbuf *sb);
 int		acpi_machdep_init(device_t dev);
@@ -617,11 +620,12 @@ acpi_set_prepare_sleep(
 /*
  * ARM specific ACPI interfaces, relating to IORT table.
  */
-int	acpi_iort_map_pci_msi(u_int seg, u_int rid, u_int *xref, u_int *devid);
+int	acpi_iort_map_pci_msi(u_int seg, u_int rid, intptr_t *xref,
+	    u_int *devid);
 int	acpi_iort_map_pci_smmuv3(u_int seg, u_int rid, uint64_t *xref,
 	    u_int *devid);
-int	acpi_iort_its_lookup(u_int its_id, u_int *xref, int *pxm);
-int	acpi_iort_map_named_msi(const char *devname, u_int rid, u_int *xref,
+int	acpi_iort_its_lookup(u_int its_id, intptr_t *xref, int *pxm);
+int	acpi_iort_map_named_msi(const char *devname, u_int rid, intptr_t *xref,
 	    u_int *devid);
 int	acpi_iort_map_named_smmuv3(const char *devname, u_int rid,
 	    uint64_t *xref, u_int *devid);

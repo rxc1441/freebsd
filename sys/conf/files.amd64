@@ -117,7 +117,10 @@ dev/apple_bce/apple_bce_mailbox.c	optional	apple_bce pci
 dev/apple_bce/apple_bce_queue.c	optional	apple_bce pci
 dev/apple_bce/apple_bce_vhci.c	optional	apple_bce pci usb
 dev/asmc/asmc.c			optional	asmc isa
-dev/asmc/asmcmmio.c		optional	asmc isa
+dev/asmc/asmc_debug.c		optional	asmc isa asmc_debug
+dev/asmc/asmc_mmio.c		optional	asmc isa
+dev/asmc/asmc_pio.c		optional	asmc isa
+dev/asmc/asmc_sysctl.c		optional	asmc isa
 dev/axgbe/if_axgbe_pci.c	optional	axp
 dev/axgbe/xgbe-desc.c		optional	axp
 dev/axgbe/xgbe-dev.c		optional	axp
@@ -195,9 +198,9 @@ dev/ice/ice_fwlog.c		optional	ice pci \
 dev/ice/ice_rdma.c		optional	ice pci \
 	compile-with "${NORMAL_C} -I$S/dev/ice"
 dev/ice/irdma_if.m		optional	ice pci \
-	compile-with "${NORMAL_M} -I$S/dev/ice"
+	dependency "$S/tools/makeobjops.awk" compile-with "${NORMAL_M} -I$S/dev/ice"
 dev/ice/irdma_di_if.m		optional	ice pci \
-	compile-with "${NORMAL_M} -I$S/dev/ice"
+	dependency "$S/tools/makeobjops.awk" compile-with "${NORMAL_M} -I$S/dev/ice"
 dev/ice/ice_ddp_common.c	optional	ice pci \
 	compile-with "${NORMAL_C} -I$S/dev/ice"
 dev/ice/ice_iov.c	optional	ice pci pci_iov \

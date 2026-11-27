@@ -152,7 +152,8 @@ struct sysentvec {
 	vm_offset_t	sv_fxrng_gen_offset;
 	void		(*sv_onexec_old)(struct thread *td);
 	int		(*sv_onexec)(struct proc *, struct image_params *);
-	void		(*sv_protect)(struct image_params *, int);
+	void		(*sv_protect)(struct image_params *, unsigned long,
+			    const void *, int);
 	void		(*sv_onexit)(struct proc *);
 	void		(*sv_ontdexit)(struct thread *td);
 	int		(*sv_setid_allowed)(struct thread *td,
@@ -175,7 +176,8 @@ struct sysentvec {
 #define	SV_SIG_DISCIGN	0x00200000	/* Do not discard ignored signals */
 #define	SV_SIG_WAITNDQ	0x00400000	/* Wait does not dequeue SIGCHLD */
 #define	SV_DSO_SIG	0x00800000	/* Signal trampoline packed in dso */
-#define	SV_PERSISTENT_CTTY 0x01000000 /* Keep ctty after the last close */
+#define	SV_PERSISTENT_CTTY 0x01000000	/* Keep ctty after the last close */
+#define	SV_CONN_PORT0	0x02000000	/* Allow connect() with port 0 */
 
 #define	SV_ABI_MASK	0xff
 #define	SV_PROC_FLAG(p, x)	((p)->p_sysent->sv_flags & (x))
@@ -190,7 +192,7 @@ struct sysentvec {
 #define	SV_ABI_FREEBSD_FLAGS	(SV_ABI_FREEBSD | SV_ASLR | SV_SHP | \
     SV_TIMEKEEP | SV_RNG_SEED_VER | SV_SIGSYS)
 #define	SV_ABI_LINUX_FLAGS	(SV_ABI_LINUX | SV_SHP | SV_SIG_DISCIGN | \
-    SV_SIG_WAITNDQ | SV_TIMEKEEP | SV_PERSISTENT_CTTY)
+    SV_SIG_WAITNDQ | SV_TIMEKEEP | SV_PERSISTENT_CTTY | SV_CONN_PORT0)
 
 /* sv_coredump flags */
 #define	SVC_PT_COREDUMP	0x00000001	/* dump requested by ptrace(2) */

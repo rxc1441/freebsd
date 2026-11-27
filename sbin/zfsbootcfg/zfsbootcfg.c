@@ -1,6 +1,10 @@
 /*-
  * Copyright (c) 2016 Andriy Gapon <avg@FreeBSD.org>
  * All rights reserved.
+ * Copyright (c) 2026 The FreeBSD Foundation
+ *
+ * Portions of this software were developed by Klara, Inc. under sponsorship
+ * from the FreeBSD Foundation.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -24,14 +28,15 @@
  */
 
 #include <sys/types.h>
+#include <err.h>
 #include <errno.h>
-#include <limits.h>
 #include <inttypes.h>
+#include <kenv.h>
+#include <limits.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdbool.h>
 #include <string.h>
-#include <kenv.h>
 #include <unistd.h>
 
 #include <libzfsbootenv.h>
@@ -55,6 +60,7 @@ add_pair(const char *name, const char *nvlist, const char *key,
 
 	data = NULL;
 	rv = EINVAL;
+	errno = 0;
 	if (strcmp(type, "DATA_TYPE_STRING") == 0) {
 		data = __DECONST(void *, value);
 		size = strlen(data) + 1;
@@ -140,7 +146,7 @@ add_pair(const char *name, const char *nvlist, const char *key,
 				v = 1;
 			else if (strcasecmp(value, "NO") == 0)
 				v = 0;
-			if (strcasecmp(value, "true") == 0)
+			else if (strcasecmp(value, "true") == 0)
 				v = 1;
 			else if (strcasecmp(value, "false") == 0)
 				v = 0;
@@ -161,18 +167,29 @@ done:
 static int
 delete_pair(const char *name, const char *nvlist, const char *key)
 {
-	void *nv;
+	void *nv = NULL;
 	int rv;
 
 	rv = lzbe_nvlist_get(name, nvlist, &nv);
-	if (rv == 0) {
+	if (rv == 0)
 		rv = lzbe_remove_pair(nv, key);
-	}
 	if (rv == 0)
 		rv = lzbe_nvlist_set(name, nvlist, nv);
 
 	lzbe_nvlist_free(nv);
 	return (rv);
+}
+
+static void
+usage(void)
+{
+	fprintf(stderr, "%s\n%s\n%s\n%s\n",
+	    "usage: zfsbootcfg [-z pool] [options]",
+	    "       zfsbootcfg [-z pool] [-n name] -k key [-t type] -v value "
+	    "[-p]",
+	    "       zfsbootcfg [-z pool] [-n name] -d key [-p]",
+	    "       zfsbootcfg [-z pool] [-n name] -p");
+	exit(1);
 }
 
 /*
@@ -220,6 +237,8 @@ main(int argc, char * const *argv)
 		case 'z':
 			name = optarg;
 			break;
+		default:
+			usage();
 		}
 	}
 
@@ -229,16 +248,17 @@ main(int argc, char * const *argv)
 	if (argc == 1)
 		value = argv[0];
 
-	if (argc > 1) {
-		fprintf(stderr, "usage: zfsbootcfg <boot.config(5) options>\n");
-		return (1);
-	}
+	if (argc > 1)
+		usage();
+
+	/* Setting a key needs something to set it to. */
+	if (key != NULL && !delete && value == NULL)
+		usage();
 
 	if (name == NULL) {
 		rv = kenv(KENV_GET, "vfs.root.mountfrom", buf, sizeof(buf));
 		if (rv <= 0) {
-			perror("can't get vfs.root.mountfrom");
-			return (1);
+			err(1, "can't get vfs.root.mountfrom");
 		}
 
 		if (strncmp(buf, "zfs:", 4) == 0) {
@@ -247,8 +267,7 @@ main(int argc, char * const *argv)
 				*name = '\0';
 			name = buf + 4;
 		} else {
-			perror("not a zfs root");
-			return (1);
+			err(1, "not a zfs root");
 		}
 	}
 
@@ -267,7 +286,7 @@ main(int argc, char * const *argv)
 		if (rv == 0)
 			printf("zfs bootenv is successfully written\n");
 		else
-			printf("error: %d\n", rv);
+			warnx("error: %d\n", rv);
 	} else if (!print) {
 		char *ptr;
 
@@ -278,8 +297,9 @@ main(int argc, char * const *argv)
 	}
 
 	if (print) {
-		rv = lzbe_bootenv_print(name, nvlist, stdout);
+		if (lzbe_bootenv_print(name, nvlist, stdout) != 0)
+			rv = 1;
 	}
 
-	return (rv);
+	exit(rv != 0);
 }

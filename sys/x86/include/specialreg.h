@@ -402,6 +402,10 @@
 #define	CPUID_TYPE_INVAL	0
 #define	CPUID_TYPE_SMT		1
 #define	CPUID_TYPE_CORE		2
+#define	CPUID_TYPE_MODULE	3
+#define	CPUID_TYPE_TILE		4
+#define	CPUID_TYPE_DIE		5
+#define	CPUID_TYPE_DIEGRP	6
 
 /*
  * CPUID instruction 0xd Processor Extended State Enumeration Sub-leaf 1
@@ -1317,6 +1321,10 @@
 #define	MSR_LS_CFG	0xc0011020
 #define	MSR_IC_CFG	0xc0011021	/* Instruction Cache Configuration */
 #define	MSR_DE_CFG	0xc0011029	/* Decode Configuration */
+#define	MSR_AMD_IBS_FETCH_CTL	0xc0011030
+#define	MSR_AMD_IBS_OP_CTL	0xc0011033
+#define	MSR_AMD_IBS_OP_CTL2	0xc001103e
+#define	MSR_AMD_IBS_FETCH_CTL2	0xc001103f
 
 /* MSR_AMDK8_IPM */
 #define	AMDK8_SMIONCMPHALT	(1ULL << 27)

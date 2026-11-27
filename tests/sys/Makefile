@@ -12,6 +12,7 @@ TESTS_SUBDIRS+=		capsicum
 TESTS_SUBDIRS+=		${_cddl}
 # XXX: Currently broken in CI
 #TESTS_SUBDIRS+=		compat32
+TESTS_SUBDIRS+=		${_cpuctl}
 TESTS_SUBDIRS+=		devrandom
 TESTS_SUBDIRS+=		fifo
 TESTS_SUBDIRS+=		file
@@ -19,6 +20,7 @@ TESTS_SUBDIRS+=		fs
 TESTS_SUBDIRS+=		geom
 TESTS_SUBDIRS+=		kern
 TESTS_SUBDIRS+=		kqueue
+TESTS_SUBDIRS+=		libkern
 TESTS_SUBDIRS+=		mac
 TESTS_SUBDIRS+=		mqueue
 TESTS_SUBDIRS+=		net
@@ -45,6 +47,10 @@ _audit=	audit
 
 .if ${MK_CDDL} != "no"
 _cddl=	cddl
+.endif
+
+.if ${MACHINE_CPUARCH} == "amd64" || ${MACHINE_CPUARCH} == "i386"
+_cpuctl=	cpuctl
 .endif
 
 .if ${MK_NETGRAPH} != "no"

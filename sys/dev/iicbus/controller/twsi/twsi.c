@@ -79,6 +79,7 @@
 #define	TWSI_STATUS_DATA_RD_ACK		0x50
 #define	TWSI_STATUS_DATA_RD_NOACK	0x58
 #define	TWSI_STATUS_IDLE		0xf8
+#define	TWSI_IDLE_RETRY			100
 
 #define	TWSI_DEBUG
 #undef TWSI_DEBUG
@@ -120,6 +121,9 @@ twsi_control_clear(struct twsi_softc *sc, uint32_t mask)
 	val = TWSI_READ(sc, sc->reg_control);
 	debugf(sc, "read val=%x\n", val);
 	val &= ~(TWSI_CONTROL_STOP | TWSI_CONTROL_START);
+	/* Do not clear the interrupt flag by writing it back */
+	if (sc->iflag_w1c)
+		val &= ~TWSI_CONTROL_IFLG;
 	val &= ~mask;
 	debugf(sc, "write val=%x\n", val);
 	TWSI_WRITE(sc, sc->reg_control, val);
@@ -133,6 +137,9 @@ twsi_control_set(struct twsi_softc *sc, uint32_t mask)
 	val = TWSI_READ(sc, sc->reg_control);
 	debugf(sc, "read val=%x\n", val);
 	val &= ~(TWSI_CONTROL_STOP | TWSI_CONTROL_START);
+	/* Do not clear the interrupt flag by writing it back */
+	if (sc->iflag_w1c)
+		val &= ~TWSI_CONTROL_IFLG;
 	val |= mask;
 	debugf(sc, "write val=%x\n", val);
 	TWSI_WRITE(sc, sc->reg_control, val);
@@ -482,6 +489,28 @@ twsi_error(struct twsi_softc *sc, int err)
 	TWSI_WRITE(sc, sc->reg_control, sc->control_val | TWSI_CONTROL_STOP);
 }
 
+/*
+ * The status register takes a short time to go back to the idle value after
+ * the module was disabled at the end of the previous transfer, and it reads
+ * other values in the meantime.  Wait a little before saying that the bus is
+ * not idle.
+ */
+static uint32_t
+twsi_wait_idle(struct twsi_softc *sc)
+{
+	uint32_t status;
+	int retry;
+
+	status = TWSI_READ(sc, sc->reg_status);
+	for (retry = TWSI_IDLE_RETRY;
+	    status != TWSI_STATUS_IDLE && retry > 0; retry--) {
+		DELAY(10);
+		status = TWSI_READ(sc, sc->reg_status);
+	}
+
+	return (status);
+}
+
 static int
 twsi_transfer(device_t dev, struct iic_msg *msgs, uint32_t nmsgs)
 {
@@ -499,7 +528,7 @@ twsi_transfer(device_t dev, struct iic_msg *msgs, uint32_t nmsgs)
 	    ("starting a transfer while another is active"));
 
 	debugf(sc, "transmitting %d messages\n", nmsgs);
-	status = TWSI_READ(sc, sc->reg_status);
+	status = twsi_wait_idle(sc);
 	debugf(sc, "status=0x%x\n", status);
 	if (status != TWSI_STATUS_IDLE) {
 		debugf(sc, "Bad status at start of transfer\n");

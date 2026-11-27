@@ -75,7 +75,8 @@ NOSTDINC= -nostdinc
 INCLUDES= ${NOSTDINC} ${INCLMAGIC} -I. -I$S -I$S/contrib/ck/include
 
 CFLAGS=	${COPTFLAGS} ${DEBUG}
-CFLAGS+= ${INCLUDES} -D_KERNEL -DHAVE_KERNEL_OPTION_HEADERS -include opt_global.h
+CPPFLAGS= ${INCLUDES} -D_KERNEL -DHAVE_KERNEL_OPTION_HEADERS -include opt_global.h
+CFLAGS+= ${CPPFLAGS}
 CFLAGS_PARAM_INLINE_UNIT_GROWTH?=100
 CFLAGS_PARAM_LARGE_FUNCTION_GROWTH?=1000
 CFLAGS.gcc+= -finline-limit=${INLINE_LIMIT}
@@ -159,7 +160,8 @@ NOSAN_C= ${NORMAL_C:N-fsanitize*:N-fno-sanitize*:N-fasan-shadow-offset*}
 # for ZSTD in the kernel (include zstd/lib/freebsd before other CFLAGS)
 ZSTD_C= ${CC} -c -DZSTD_HEAPMODE=1 -I$S/contrib/zstd/lib/freebsd ${CFLAGS} \
 	-I$S/contrib/zstd/lib -I$S/contrib/zstd/lib/common ${WERROR} \
-	-Wno-missing-prototypes -U__BMI__ -DZSTD_NO_INTRINSICS ${.IMPSRC}
+	-Wno-missing-prototypes -U__BMI__ -DZSTD_NO_INTRINSICS \
+	-DZSTD_DISABLE_ASM ${.IMPSRC}
 # https://github.com/facebook/zstd/commit/812e8f2a [zstd 1.4.1]
 # "Note that [GCC] autovectorization still does not do a good job on the
 # optimized version, so it's turned off via attribute and flag.  I found

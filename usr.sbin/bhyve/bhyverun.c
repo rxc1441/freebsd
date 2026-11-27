@@ -2,7 +2,6 @@
  * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2011 NetApp, Inc.
- * Copyright (c) 2026 Hans Rosenfeld
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -722,6 +721,24 @@ vm_loop(struct vmctx *ctx, struct vcpu *vcpu)
 		}
 	}
 	EPRINTLN("vm_run error %d, errno %d", error, errno);
+}
+
+/*
+ * A vCPU thread handling an exit finds that a call on the VM failed.  If the
+ * VM was destroyed under it (bhyvectl --destroy), every call fails: ENXIO
+ * while the destroy waits for the vCPU threads, ENOTTY once the device is
+ * gone.  End as vm_loop() does when vm_run() finds the VM destroyed, instead
+ * of asserting or reporting an emulation failure and aborting.  On a VM that
+ * still exists this returns and the caller handles the failure as before.
+ */
+void
+vm_check_destroyed(struct vcpu *vcpu)
+{
+	int tmp;
+
+	if (vm_get_capability(vcpu, VM_CAP_UNRESTRICTED_GUEST, &tmp) != 0 &&
+	    (errno == ENXIO || errno == ENOTTY))
+		exit(BHYVE_EXIT_ERROR);
 }
 
 static int

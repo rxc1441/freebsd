@@ -17,6 +17,7 @@
  * Copyright (c) 2015, Nexenta Systems, Inc. All rights reserved.
  * Copyright 2019 Joyent, Inc.
  * Copyright 2026 ConnectWise
+ * Copyright 2026 Oxide Computer Company
  */
 
 #include <sys/dsl_scan.h>
@@ -1908,7 +1909,6 @@ static int
 dsl_scan_zil_record(zilog_t *zilog, const lr_t *lrc, void *arg,
     uint64_t claim_txg)
 {
-	(void) zilog;
 	if (lrc->lrc_txtype == TX_WRITE) {
 		zil_scan_arg_t *zsa = arg;
 		dsl_pool_t *dp = zsa->zsa_dp;
@@ -1929,6 +1929,10 @@ dsl_scan_zil_record(zilog_t *zilog, const lr_t *lrc, void *arg,
 		 * other records that are not synced)
 		 */
 		if (claim_txg == 0 || BP_GET_BIRTH(bp) < claim_txg)
+			return (0);
+
+		/* Several records can share a dmu_sync() block. */
+		if (zil_bp_tree_add(zilog, bp) != 0)
 			return (0);
 
 		ASSERT3U(BP_GET_LSIZE(bp), !=, 0);
@@ -2088,8 +2092,17 @@ dsl_scan_prefetch(scan_prefetch_ctx_t *spc, blkptr_t *bp, zbookmark_phys_t *zb)
 	 * thread.
 	 */
 	mutex_enter(&spa->spa_scrub_lock);
-	if (avl_find(&scn->scn_prefetch_queue, spic, &idx) != NULL) {
-		/* this block is already queued for prefetch */
+	/*
+	 * Recheck the stop flag now that we hold the same lock used by
+	 * shutdown to drain and clear the queue. Without this recheck, a
+	 * callback that read scn_prefetch_stop as false just before
+	 * shutdown could still insert a new entry after the prefetch
+	 * worker has already drained and exited, leaving a stale entry
+	 * in the queue across txgs. Also skip if this block is already
+	 * queued for prefetch.
+	 */
+	if (scn->scn_prefetch_stop ||
+	    avl_find(&scn->scn_prefetch_queue, spic, &idx) != NULL) {
 		kmem_free(spic, sizeof (scan_prefetch_issue_ctx_t));
 		scan_prefetch_ctx_rele(spc, scn);
 		mutex_exit(&spa->spa_scrub_lock);
@@ -3257,7 +3270,8 @@ dsl_scan_visit(dsl_scan_t *scn, dmu_tx_t *tx)
 			dsl_scan_visitds(scn,
 			    dp->dp_origin_snap->ds_object, tx);
 		}
-		ASSERT(!scn->scn_suspending);
+		if (scn->scn_suspending)
+			return;
 	} else if (scn->scn_phys.scn_bookmark.zb_objset !=
 	    ZB_DESTROYED_OBJSET) {
 		uint64_t dsobj = scn->scn_phys.scn_bookmark.zb_objset;
@@ -4751,6 +4765,11 @@ dsl_scan_sync(dsl_pool_t *dp, dmu_tx_t *tx)
 		taskq_wait_id(dp->dp_sync_taskq, prefetch_tqid);
 		(void) zio_wait(scn->scn_zio_root);
 		scn->scn_zio_root = NULL;
+
+		/* The prefetch queue should be empty now. */
+		mutex_enter(&spa->spa_scrub_lock);
+		VERIFY0(avl_numnodes(&scn->scn_prefetch_queue));
+		mutex_exit(&spa->spa_scrub_lock);
 
 		zfs_dbgmsg("scan visited %llu blocks of %s in %llums "
 		    "(%llu os's, %llu holes, %llu < mintxg, "

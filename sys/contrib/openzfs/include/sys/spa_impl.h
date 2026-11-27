@@ -258,6 +258,7 @@ struct spa {
 	boolean_t	spa_is_initializing;	/* true while opening pool */
 	boolean_t	spa_is_exporting;	/* true while exporting pool */
 	kthread_t	*spa_export_thread;	/* valid during pool export */
+	uint_t		spa_stats_holds;	/* export waits for these */
 	kthread_t	*spa_load_thread;	/* loading, no namespace lock */
 	metaslab_class_t *spa_normal_class;	/* normal data class */
 	metaslab_class_t *spa_log_class;	/* intent log data class */
@@ -266,6 +267,7 @@ struct spa {
 	metaslab_class_t *spa_special_embedded_log_class; /* log on special */
 	metaslab_class_t *spa_dedup_class;	/* dedup allocation class */
 	uint64_t	spa_first_txg;		/* first txg after spa_open() */
+	uint64_t	spa_claim_min_txg;	/* ZIL: first uncommitted txg */
 	uint64_t	spa_final_txg;		/* txg of export/destroy */
 	uint64_t	spa_freeze_txg;		/* freeze pool at this txg */
 	uint64_t	spa_load_max_txg;	/* best initial ub_txg */
@@ -387,6 +389,7 @@ struct spa {
 	char		*spa_root;		/* alternate root directory */
 	uint64_t	spa_ena;		/* spa-wide ereport ENA */
 	int		spa_last_open_failed;	/* error if last open failed */
+	uint64_t	spa_load_latest_ub_txg;	/* newest ub txg on disk */
 	uint64_t	spa_last_ubsync_txg;	/* "best" uberblock txg */
 	uint64_t	spa_last_ubsync_txg_ts;	/* timestamp from that ub */
 	uint64_t	spa_load_txg;		/* ub txg that loaded */

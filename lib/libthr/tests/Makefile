@@ -4,7 +4,6 @@ WARNS?=		3
 
 TESTSRC=	${SRCTOP}/contrib/netbsd-tests/lib/libpthread
 
-# TODO: t_name (missing pthread_getname_np support in FreeBSD)
 NETBSD_ATF_TESTS_C=	barrier_test
 NETBSD_ATF_TESTS_C+=	cond_test
 NETBSD_ATF_TESTS_C+=	condwait_test
@@ -15,6 +14,7 @@ NETBSD_ATF_TESTS_C+=	fpu_test
 NETBSD_ATF_TESTS_C+=	join_test
 NETBSD_ATF_TESTS_C+=	kill_test
 NETBSD_ATF_TESTS_C+=	mutex_test
+NETBSD_ATF_TESTS_C+=	name_test
 NETBSD_ATF_TESTS_C+=	once_test
 NETBSD_ATF_TESTS_C+=	preempt_test
 NETBSD_ATF_TESTS_C+=	rwlock_test
@@ -38,6 +38,8 @@ ATF_TESTS_C+=		umtx_op_test
 ATF_TESTS_C+=		pthread_sigqueue_test
 ATF_TESTS_C+=		pthread_tryjoin_test
 ATF_TESTS_C+=		pthread_query_test
+ATF_TESTS_C+=		pthread_mutex_clocklock_test
+ATF_TESTS_C+=		pthread_rwlock_clocklock_test
 
 LIBADD+=		pthread
 LIBADD.fpu_test+=	m

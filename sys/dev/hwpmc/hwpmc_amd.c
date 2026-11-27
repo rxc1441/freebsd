@@ -30,7 +30,11 @@
  * SUCH DAMAGE.
  */
 
-/* Support for the AMD K8 and later processors */
+/*
+ * Support for 64-bit AMD processors:
+ *  - Zen families of microarchitectures
+ *  - (legacy) K8-K10, up to Bulldozer and Jaguar families
+ */
 
 #include <sys/param.h>
 #include <sys/lock.h>
@@ -57,7 +61,7 @@
 
 DPCPU_DEFINE_STATIC(uint32_t, nmi_counter);
 
-/* AMD K8 PMCs */
+/* AMD PMC decriptors */
 struct amd_descr {
 	struct pmc_descr pm_descr;   /* "base class" */
 	uint32_t	pm_evsel;    /* address of EVSEL register */
@@ -409,6 +413,7 @@ static int
 amd_read_pmc(int cpu, int ri, struct pmc *pm, pmc_value_t *v)
 {
 	const struct amd_descr *pd;
+	struct pmc_pcpu_state *pps;
 	pmc_value_t tmp;
 	enum pmc_mode mode;
 
@@ -427,7 +432,19 @@ amd_read_pmc(int cpu, int ri, struct pmc *pm, pmc_value_t *v)
 
 	tmp = rdmsr(pd->pm_perfctr); /* RDMSR serializes */
 	PMCDBG2(MDP, REA, 2, "amd-read (pre-munge) id=%d -> %jd", ri, tmp);
-	if (PMC_IS_SAMPLING_MODE(mode)) {
+	if (pd->pm_subclass == PMC_AMD_SUB_CLASS_UMC) {
+		/*
+		 * UMC counters saturate at 2^48 instead of wrapping.  Clear
+		 * bit 47 once it is set and keep the carries in software.
+		 */
+		pps = &pm->pm_pcpu_state[cpu];
+		if ((tmp & (1ULL << 47)) != 0) {
+			tmp &= ~(1ULL << 47);
+			wrmsr(pd->pm_perfctr, tmp);
+			pps->pps_overflowcnt++;
+		}
+		tmp += (pmc_value_t)pps->pps_overflowcnt << 47;
+	} else if (PMC_IS_SAMPLING_MODE(mode)) {
 		/*
 		 * Clamp value to 0 if the counter just overflowed,
 		 * otherwise the returned reload count would wrap to a
@@ -465,9 +482,14 @@ amd_write_pmc(int cpu, int ri, struct pmc *pm, pmc_value_t v)
 	pd = &amd_pmcdesc[ri];
 	mode = PMC_TO_MODE(pm);
 
-	/* use 2's complement of the count for sampling mode PMCs */
-	if (PMC_IS_SAMPLING_MODE(mode))
+	if (pd->pm_subclass == PMC_AMD_SUB_CLASS_UMC) {
+		/* Bits 47 and up are kept in software, see amd_read_pmc(). */
+		pm->pm_pcpu_state[cpu].pps_overflowcnt = v >> 47;
+		v &= (1ULL << 47) - 1;
+	} else if (PMC_IS_SAMPLING_MODE(mode)) {
+		/* use 2's complement of the count for sampling mode PMCs */
 		v = AMD_RELOAD_COUNT_TO_PERFCTR_VALUE(v);
+	}
 
 	PMCDBG3(MDP, WRI, 1, "amd-write cpu=%d ri=%d v=%jx", cpu, ri, v);
 
@@ -573,6 +595,16 @@ amd_can_assign_pmc(int ri, struct pmc *pm, const struct pmc_op_pmcallocate *a)
 	/* Validate sub-class. */
 	if (amd_pmcdesc[ri].pm_subclass != a->pm_md.pm_amd.pm_amd_sub_class)
 		return (EINVAL);
+
+	/*
+	 * The L3, DF and UMC counters are shared by several CPUs, so a
+	 * process-mode PMC would be loaded on more than one of them, and
+	 * amd_intr() does not handle their overflow.
+	 */
+	if (amd_pmcdesc[ri].pm_subclass != PMC_AMD_SUB_CLASS_CORE &&
+	    a->pm_mode != PMC_MODE_SC)
+		return (EXTERROR(EINVAL,
+		    "AMD L3, DF and UMC counters support only system counting"));
 
 	if (((caps & PMC_CAP_PRECISE) != 0) &&
 	    ((pd->pd_caps & PMC_CAP_PRECISE) == 0))
@@ -926,7 +958,7 @@ amd_intr(struct trapframe *tf)
 	pmc_value_t v;
 	uint64_t config, evsel, perfctr;
 	uint32_t active = 0, count = 0;
-	int i, error, retval, cpu;
+	int i, error, ibs, retval, cpu;
 
 	cpu = curcpu;
 	KASSERT(cpu >= 0 && cpu < pmc_cpu_max(),
@@ -938,9 +970,13 @@ amd_intr(struct trapframe *tf)
 
 	pac = amd_pcpu[cpu];
 
-	retval = pmc_ibs_intr(tf);
-	if (retval)
-		goto done;
+	/*
+	 * IBS and the core counters share the NMI, and one NMI can stand for
+	 * both.  Service the core counters even when IBS claims the NMI: an
+	 * overflow that is not serviced is never reloaded, and its counter
+	 * stops sampling.
+	 */
+	ibs = pmc_ibs_intr(tf);
 
 	/*
 	 * look for all PMCs that have interrupted:
@@ -1015,14 +1051,16 @@ amd_intr(struct trapframe *tf)
 	 */
 	if (retval) {
 		DPCPU_SET(nmi_counter, min(2, active));
-	} else {
+	} else if (ibs == 0) {
+		/* An NMI claimed by IBS does not use up a core credit. */
 		if ((count = DPCPU_GET(nmi_counter))) {
 			retval = 1;
 			DPCPU_SET(nmi_counter, --count);
 		}
 	}
+	if (ibs != 0)
+		retval = 1;
 
-done:
 	if (retval)
 		counter_u64_add(pmc_stats.pm_intr_processed, 1);
 	else
@@ -1044,7 +1082,7 @@ amd_intr_v2(struct trapframe *tf)
 	pmc_value_t v;
 	uint64_t status, pending;
 	uint32_t active = 0, count = 0;
-	int i, error, retval, cpu;
+	int i, error, ibs, retval, cpu;
 
 	cpu = curcpu;
 	KASSERT(cpu >= 0 && cpu < pmc_cpu_max(),
@@ -1055,15 +1093,8 @@ amd_intr_v2(struct trapframe *tf)
 	retval = 0;
 	pac = amd_pcpu[cpu];
 
-	retval = pmc_ibs_intr(tf);
-	if (retval)
-		goto done;
-
-	amd_v2_freeze_core(cpu);
-
-	/* Read the overflow bitmap once. */
-	status = rdmsr(AMD_PMC_GLOBAL_STATUS);
-	status &= amd_global_cntr_mask;
+	/* Service the core counters even when IBS claims the NMI. */
+	ibs = pmc_ibs_intr(tf);
 
 	/*
 	 * Count all active sampling PMCs, not just the ones that
@@ -1075,6 +1106,18 @@ amd_intr_v2(struct trapframe *tf)
 		if (pm != NULL && PMC_IS_SAMPLING_MODE(PMC_TO_MODE(pm)))
 			active++;
 	}
+
+	/* An IBS NMI with no core counter sampling has nothing more to do. */
+	if (ibs != 0 && active == 0) {
+		retval = 1;
+		goto done;
+	}
+
+	amd_v2_freeze_core(cpu);
+
+	/* Read the overflow bitmap once. */
+	status = rdmsr(AMD_PMC_GLOBAL_STATUS);
+	status &= amd_global_cntr_mask;
 
 	/* ffsll() returns a 1-based bit index, or 0 when no bits are set. */
 	pending = status;
@@ -1118,12 +1161,15 @@ amd_intr_v2(struct trapframe *tf)
 	 */
 	if (retval) {
 		DPCPU_SET(nmi_counter, min(2, active));
-	} else {
+	} else if (ibs == 0) {
+		/* An NMI claimed by IBS does not use up a core credit. */
 		if ((count = DPCPU_GET(nmi_counter))) {
 			retval = 1;
 			DPCPU_SET(nmi_counter, --count);
 		}
 	}
+	if (ibs != 0)
+		retval = 1;
 
 done:
 	if (retval)
@@ -1281,7 +1327,7 @@ amd_pcpu_init(struct pmc_mdep *md, int cpu)
 	 * state and initialize pointers in the MI per-cpu descriptor.
 	 */
 	pc = pmc_pcpu[cpu];
-	first_ri = md->pmd_classdep[PMC_MDEP_CLASS_INDEX_K8].pcd_ri;
+	first_ri = md->pmd_classdep[PMC_MDEP_CLASS_INDEX_AMD].pcd_ri;
 
 	KASSERT(pc != NULL, ("[amd,%d] NULL per-cpu pointer", __LINE__));
 
@@ -1340,7 +1386,7 @@ amd_pcpu_fini(struct pmc_mdep *md, int cpu)
 	pc = pmc_pcpu[cpu];
 	KASSERT(pc != NULL, ("[amd,%d] NULL per-cpu state", __LINE__));
 
-	first_ri = md->pmd_classdep[PMC_MDEP_CLASS_INDEX_K8].pcd_ri;
+	first_ri = md->pmd_classdep[PMC_MDEP_CLASS_INDEX_AMD].pcd_ri;
 
 	/*
 	 * Reset pointers in the MI 'per-cpu' state.
@@ -1377,6 +1423,16 @@ amd_v2_hwcheck_cpu(void *arg)
 	int error, i;
 
 	state = arg;
+
+	/*
+	 * A buggy hypervisor can advertise the PerfMonV2 CPUID bit without
+	 * implementing GLOBAL_CTL.
+	 */
+	if (rdmsr_safe(AMD_PMC_GLOBAL_CTL, &reg) != 0) {
+		atomic_set_int(&state->avh_read_error, 1);
+		return;
+	}
+
 	for (i = 0; i < amd_core_npmcs; i++) {
 		error = rdmsr_safe(amd_pmcdesc[i].pm_evsel, &reg);
 		if (error != 0) {
@@ -1407,7 +1463,7 @@ amd_hwcheck(void)
 		smp_rendezvous_cpus(all_cpus, smp_no_rendezvous_barrier,
 		    amd_v2_hwcheck_cpu, smp_no_rendezvous_barrier, &state);
 		if (state.avh_read_error != 0) {
-			printf("hwpmc: AMD PerfMonV2 EVSEL read failed on one "
+			printf("hwpmc: AMD PerfMonV2 MSR read failed on one "
 			    "or more CPUs!\n");
 			return (-1);
 		}
@@ -1585,8 +1641,12 @@ pmc_amd_initialize(void)
 			pmcs_per_umc = amd_umc_npmcs / popcntq(regs[2]);
 		}
 
-		/* EAX bit 0 holds the PerfMonV2 flag. */
-		if (EXTPERFMON_PERFMONV2(regs[0]) && family >= 0x19)
+		/*
+		 * EAX bit 0 holds the PerfMonV2 flag.  PerfMonV2 requires
+		 * PerfCtrExtCore; reject inconsistent CPUID (e.g. bhyve).
+		 */
+		if (EXTPERFMON_PERFMONV2(regs[0]) && family >= 0x19 &&
+		    (amd_feature2 & AMDID2_PCXC) != 0)
 			amd_perfmon_v2 = true;
 	}
 
@@ -1615,8 +1675,8 @@ pmc_amd_initialize(void)
 	for (i = 0; i < amd_core_npmcs; i++) {
 		d = &amd_pmcdesc[i];
 		snprintf(d->pm_descr.pd_name, PMC_NAME_MAX,
-		    "K8-%d", i);
-		d->pm_descr.pd_class = PMC_CLASS_K8;
+		    "AMD-%d", i);
+		d->pm_descr.pd_class = PMC_CLASS_AMD;
 		d->pm_descr.pd_caps = AMD_PMC_CAPS;
 		/*
 		 * Zen 5 can precisely count retire events.
@@ -1646,8 +1706,8 @@ pmc_amd_initialize(void)
 		for (i = 0; i < amd_l3_npmcs; i++) {
 			d = &amd_pmcdesc[amd_npmcs + i];
 			snprintf(d->pm_descr.pd_name, PMC_NAME_MAX,
-			    "K8-L3-%d", i);
-			d->pm_descr.pd_class = PMC_CLASS_K8;
+			    "AMD-L3-%d", i);
+			d->pm_descr.pd_class = PMC_CLASS_AMD;
 			d->pm_descr.pd_caps = AMD_PMC_L3_CAPS;
 			d->pm_descr.pd_width = 48;
 			d->pm_evsel = AMD_PMC_L3_BASE + 2 * i;
@@ -1662,8 +1722,8 @@ pmc_amd_initialize(void)
 		for (i = 0; i < amd_df_npmcs; i++) {
 			d = &amd_pmcdesc[amd_npmcs + i];
 			snprintf(d->pm_descr.pd_name, PMC_NAME_MAX,
-			    "K8-DF-%d", i);
-			d->pm_descr.pd_class = PMC_CLASS_K8;
+			    "AMD-DF-%d", i);
+			d->pm_descr.pd_class = PMC_CLASS_AMD;
 			d->pm_descr.pd_caps = AMD_PMC_DF_CAPS;
 			d->pm_descr.pd_width = 48;
 			d->pm_evsel = AMD_PMC_DF_BASE + 2 * i;
@@ -1686,8 +1746,8 @@ pmc_amd_initialize(void)
 			hw = ch * pmcs_per_umc + j;
 			d = &amd_pmcdesc[amd_npmcs + i];
 			snprintf(d->pm_descr.pd_name, PMC_NAME_MAX,
-			    "K8-UMC%d-%d", ch, i);
-			d->pm_descr.pd_class = PMC_CLASS_K8;
+			    "AMD-UMC%d-%d", ch, i);
+			d->pm_descr.pd_class = PMC_CLASS_AMD;
 			d->pm_descr.pd_caps = AMD_PMC_UMC_CAPS;
 			d->pm_descr.pd_width = 48;
 			d->pm_evsel = AMD_PMC_UMC_BASE + 2 * hw;
@@ -1762,11 +1822,11 @@ pmc_amd_initialize(void)
 	if (error != 0)
 		goto error;
 
-	/* Initialize AMD K8 PMC handling. */
-	pcd = &pmc_mdep->pmd_classdep[PMC_MDEP_CLASS_INDEX_K8];
+	/* Initialize AMD PMC handling. */
+	pcd = &pmc_mdep->pmd_classdep[PMC_MDEP_CLASS_INDEX_AMD];
 
 	pcd->pcd_caps		= AMD_PMC_CAPS;
-	pcd->pcd_class		= PMC_CLASS_K8;
+	pcd->pcd_class		= PMC_CLASS_AMD;
 	pcd->pcd_num		= amd_npmcs;
 	pcd->pcd_ri		= pmc_mdep->pmd_npmc;
 	pcd->pcd_width		= 48;

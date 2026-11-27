@@ -858,6 +858,49 @@ sysctl_rack_wma_divisor(SYSCTL_HANDLER_ARGS)
 	return (0);
 }
 
+static int
+sysctl_rack_pace_max_seg(SYSCTL_HANDLER_ARGS)
+{
+	int32_t val;
+	int error;
+
+	val = *(int32_t *)arg1;
+	error = sysctl_handle_int(oidp, &val, 0, req);
+	if (error != 0 || req->newptr == NULL)
+		return (error);
+	/*
+	 * This becomes rc_user_set_max_segs of each new connection, so
+	 * apply the same 1 to MAX_USER_SET_SEG limit as the
+	 * TCP_RACK_PACE_MAX_SEG socket option. A value of 0 leads to a
+	 * division by zero in rack_setup_fast_output().
+	 */
+	if (val < 1 || val > MAX_USER_SET_SEG)
+		return (EINVAL);
+	*(int32_t *)arg1 = val;
+	return (0);
+}
+
+static int
+sysctl_rack_rate_sample_method(SYSCTL_HANDLER_ARGS)
+{
+	int32_t val;
+	int error;
+
+	val = *(int32_t *)arg1;
+	error = sysctl_handle_int(oidp, &val, 0, req);
+	if (error != 0 || req->newptr == NULL)
+		return (error);
+	/*
+	 * Accept the same values as the TCP_BBR_RACK_RTT_USE socket option.
+	 * tcp_rack_xmit_timer_commit() panics on any other value with
+	 * INVARIANTS, and ignores every RTT sample without.
+	 */
+	if (val != USE_RTT_HIGH && val != USE_RTT_LOW && val != USE_RTT_AVG)
+		return (EINVAL);
+	*(int32_t *)arg1 = val;
+	return (0);
+}
+
 static void
 rack_init_sysctls(void)
 {
@@ -878,11 +921,12 @@ rack_init_sysctls(void)
 	    "stats",
 	    CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
 	    "Rack Counters");
-	SYSCTL_ADD_S32(&rack_sysctl_ctx,
+	SYSCTL_ADD_PROC(&rack_sysctl_ctx,
 	    SYSCTL_CHILDREN(rack_sysctl_root),
-	    OID_AUTO, "rate_sample_method", CTLFLAG_RW,
-	    &rack_rate_sample_method , USE_RTT_LOW,
-	    "What method should we use for rate sampling 0=high, 1=low ");
+	    OID_AUTO, "rate_sample_method",
+	    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_MPSAFE,
+	    &rack_rate_sample_method, 0, sysctl_rack_rate_sample_method, "I",
+	    "What method should we use for rate sampling 0=high, 1=low, 2=avg");
 	/* Probe rtt related controls */
 	rack_probertt = SYSCTL_ADD_NODE(&rack_sysctl_ctx,
 	    SYSCTL_CHILDREN(rack_sysctl_root),
@@ -1082,11 +1126,11 @@ rack_init_sysctls(void)
 	    OID_AUTO, "gp_per_rec", CTLFLAG_RW,
 	    &rack_per_of_gp_rec, 200,
 	    "If non zero, what percentage of goodput to pace at in recovery");
-	SYSCTL_ADD_S32(&rack_sysctl_ctx,
+	SYSCTL_ADD_PROC(&rack_sysctl_ctx,
 	    SYSCTL_CHILDREN(rack_pacing),
-	    OID_AUTO, "pace_max_seg", CTLFLAG_RW,
-	    &rack_hptsi_segments, 40,
-	    "What size is the max for TSO segments in pacing and burst mitigation");
+	    OID_AUTO, "pace_max_seg", CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_MPSAFE,
+	    &rack_hptsi_segments, 0, sysctl_rack_pace_max_seg, "I",
+	    "What size is the max for TSO segments in pacing and burst mitigation (1-63)");
 	SYSCTL_ADD_S32(&rack_sysctl_ctx,
 	    SYSCTL_CHILDREN(rack_pacing),
 	    OID_AUTO, "burst_reduces", CTLFLAG_RW,
@@ -6892,7 +6936,7 @@ static void
 rack_setup_offset_for_rsm(struct tcp_rack *rack, struct rack_sendmap *src_rsm, struct rack_sendmap *rsm)
 {
 	struct mbuf *m;
-	uint32_t soff;
+	uint32_t soff, start;
 
 	if (src_rsm->m &&
 	    ((src_rsm->orig_m_len != src_rsm->m->m_len) ||
@@ -6901,7 +6945,10 @@ rack_setup_offset_for_rsm(struct tcp_rack *rack, struct rack_sendmap *src_rsm, s
 		rack_adjust_orig_mlen(src_rsm);
 	}
 	m = src_rsm->m;
-	soff = src_rsm->soff + (src_rsm->r_end - src_rsm->r_start);
+	start = src_rsm->r_start;
+	if ((src_rsm->r_flags & RACK_HAS_SYN) != 0)
+		start++;
+	soff = src_rsm->soff + (src_rsm->r_end - start);
 	while (soff >= m->m_len) {
 		/* Move out past this mbuf */
 		soff -= m->m_len;
@@ -6923,6 +6970,14 @@ rack_setup_offset_for_rsm(struct tcp_rack *rack, struct rack_sendmap *src_rsm, s
 			rsm->orig_t_space = M_TRAILINGROOM(rsm->m);
 			return;
 		}
+	}
+	if ((src_rsm->r_flags & RACK_HAS_SYN) != 0 &&
+	    src_rsm->r_end == src_rsm->r_start + 1) {
+		/* src_rsm is a SYN segment without data */
+		src_rsm->m = NULL;
+		src_rsm->soff = 0;
+		src_rsm->orig_m_len = 0;
+		src_rsm->orig_t_space = 0;
 	}
 	rsm->m = m;
 	rsm->soff = soff;
@@ -9543,8 +9598,10 @@ do_rest_ofb:
 				}
 				rack_log_map_chg(tp, rack, NULL, rsm, nrsm, MAP_SACK_M2, end, __LINE__);
 				rsm->r_flags &= (~RACK_HAS_FIN);
-				/* Check if the ack was too soon i.e. reordering + ack arrives too quickly */
-				prohibit_marking = rack_check_reorder_ack(tp, rack, nrsm, nrsm->r_end, cts, 0, __LINE__);
+				/* Don't do a rack_check_reorder_ack() here since this block just gets
+				 * us so the new rsm can be handled down below in the if(SEQ_GEQ(end, rsm->r_end) below.
+				 * It will be called in that block.
+				 */
 				/* Position us to point to the new nrsm that starts the sack blk */
 				rsm = nrsm;
 			}
@@ -11688,10 +11745,6 @@ rack_process_ack(struct mbuf *m, struct tcphdr *th, struct socket *so,
 	INP_WLOCK_ASSERT(tptoinpcb(tp));
 
 	rack = (struct tcp_rack *)tp->t_fb_ptr;
-	if (SEQ_GEQ(tp->snd_una, tp->iss + (65535 << tp->snd_scale))) {
-		/* Checking SEG.ACK against ISS is definitely redundant. */
-		tp->t_flags2 |= TF2_NO_ISS_CHECK;
-	}
 	if (!V_tcp_insecure_ack) {
 		tcp_seq seq_min;
 		bool ghost_ack_check;
@@ -11909,6 +11962,7 @@ rack_process_ack(struct mbuf *m, struct tcphdr *th, struct socket *so,
 		ourfinisacked = 1;
 	}
 	tp->snd_una = th->th_ack;
+	tcp_adapt_iss_check(tp);
 	/* wakeups? */
 	if (acked_amount && sbavail(&so->so_snd))
 		rack_adjust_sendmap_head(rack, &so->so_snd);
@@ -12668,6 +12722,7 @@ rack_fastack(struct mbuf *m, struct tcphdr *th, struct socket *so,
 		SOCK_SENDBUF_LOCK(so);
 		mfree = sbcut_locked(&so->so_snd, acked);
 		tp->snd_una = th->th_ack;
+		tcp_adapt_iss_check(tp);
 		/* Note we want to hold the sb lock through the sendmap adjust */
 		rack_adjust_sendmap_head(rack, &so->so_snd);
 		/* Wake up the socket if we have room to write more */
@@ -15953,6 +16008,7 @@ rack_do_compressed_ack_processing(struct tcpcb *tp, struct socket *so, struct mb
 			 * should be).
 			 */
 			tp->snd_una = high_seq;
+			tcp_adapt_iss_check(tp);
 		}
 		/* Did we make a RTO error? */
 		if ((tp->t_flags & TF_PREVVALID) &&
@@ -15987,6 +16043,7 @@ rack_do_compressed_ack_processing(struct tcpcb *tp, struct socket *so, struct mb
 			SOCK_SENDBUF_LOCK(so);
 			mfree = sbcut_locked(&so->so_snd, acked_amount);
 			tp->snd_una = high_seq;
+			tcp_adapt_iss_check(tp);
 			/* Note we want to hold the sb lock through the sendmap adjust */
 			rack_adjust_sendmap_head(rack, &so->so_snd);
 			/* Wake up the socket if we have room to write more */
@@ -23231,6 +23288,15 @@ rack_process_option(struct tcpcb *tp, struct tcp_rack *rack, int sopt_name,
 	case TCP_RACK_PACE_MAX_SEG:
 		/* Max segments size in a pace in bytes */
 		RACK_OPTS_INC(tcp_rack_max_seg);
+		if (optval == 0) {
+			/*
+			 * Valid values are 1 to MAX_USER_SET_SEG (larger
+			 * values are clamped below). A value of 0 leads to
+			 * a division by zero in rack_setup_fast_output().
+			 */
+			error = EINVAL;
+			break;
+		}
 		if ((rack->dgp_on == 1) &&
 		    (rack->r_ctl.pacing_method & RACK_DGP_PACING)) {
 			/*

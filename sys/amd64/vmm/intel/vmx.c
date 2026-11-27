@@ -1247,17 +1247,6 @@ vmx_vcpu_init(void *vmi, struct vcpu *vcpu1, int vcpuid)
 	return (vcpu);
 }
 
-static int
-vmx_handle_cpuid(struct vmx_vcpu *vcpu, struct vmxctx *vmxctx)
-{
-	int handled;
-
-	handled = x86_emulate_cpuid(vcpu->vcpu, (uint64_t *)&vmxctx->guest_rax,
-	    (uint64_t *)&vmxctx->guest_rbx, (uint64_t *)&vmxctx->guest_rcx,
-	    (uint64_t *)&vmxctx->guest_rdx);
-	return (handled);
-}
-
 static __inline void
 vmx_run_trace(struct vmx_vcpu *vcpu)
 {
@@ -2670,7 +2659,12 @@ vmx_exit_process(struct vmx *vmx, struct vmx_vcpu *vcpu, struct vm_exit *vmexit)
 	case EXIT_REASON_CPUID:
 		vmm_stat_incr(vcpu->vcpu, VMEXIT_CPUID, 1);
 		SDT_PROBE3(vmm, vmx, exit, cpuid, vmx, vcpuid, vmexit);
-		handled = vmx_handle_cpuid(vcpu, vmxctx);
+		vcpu_emulate_cpuid(vcpu->vcpu,
+		    (uint64_t *)&vmxctx->guest_rax,
+		    (uint64_t *)&vmxctx->guest_rbx,
+		    (uint64_t *)&vmxctx->guest_rcx,
+		    (uint64_t *)&vmxctx->guest_rdx);
+		handled = HANDLED;
 		break;
 	case EXIT_REASON_EXCEPTION:
 		vmm_stat_incr(vcpu->vcpu, VMEXIT_EXCEPTION, 1);
@@ -2959,7 +2953,8 @@ vmx_dr_enter_guest(struct vmxctx *vmxctx)
 	 * guest DR7 and DEBUGCTL are saved/restored in the VMCS.
 	 */
 	load_dr7(0);
-	wrmsr(MSR_DEBUGCTLMSR, 0);
+	if (vmxctx->host_debugctl != 0)
+		wrmsr(MSR_DEBUGCTLMSR, 0);
 
 	/*
 	 * Disable single stepping the kernel to avoid corrupting the
@@ -3006,7 +3001,9 @@ vmx_dr_leave_guest(struct vmxctx *vmxctx)
 	load_dr2(vmxctx->host_dr2);
 	load_dr3(vmxctx->host_dr3);
 	load_dr6(vmxctx->host_dr6);
-	wrmsr(MSR_DEBUGCTLMSR, vmxctx->host_debugctl);
+	/* VM-exit clears DEBUGCTL; a failed entry also leaves it cleared. */
+	if (vmxctx->host_debugctl != 0)
+		wrmsr(MSR_DEBUGCTLMSR, vmxctx->host_debugctl);
 	load_dr7(vmxctx->host_dr7);
 	write_rflags(read_rflags() | vmxctx->host_tf);
 }
@@ -4169,6 +4166,7 @@ vmx_vcpu_snapshot(void *vcpui, struct vm_snapshot_meta *meta)
 	struct vmx *vmx;
 	struct vmx_vcpu *vcpu;
 	struct vmxctx *vmxctx;
+	uint64_t guest_msrs[GUEST_MSR_NUM];
 	int err, run, hostcpu;
 
 	err = 0;
@@ -4238,8 +4236,13 @@ vmx_vcpu_snapshot(void *vcpui, struct vm_snapshot_meta *meta)
 	if (err != 0)
 		goto done;
 
-	SNAPSHOT_BUF_OR_LEAVE(vcpu->guest_msrs,
-	    sizeof(vcpu->guest_msrs), meta, err, done);
+	memcpy(guest_msrs, vcpu->guest_msrs, sizeof(guest_msrs));
+	SNAPSHOT_BUF_OR_LEAVE(guest_msrs, sizeof(guest_msrs), meta, err, done);
+	if (meta->op == VM_SNAPSHOT_RESTORE) {
+		err = vmx_msr_guest_restore(vcpu, guest_msrs);
+		if (err != 0)
+			goto done;
+	}
 
 	SNAPSHOT_BUF_OR_LEAVE(vcpu->pir_desc,
 	    sizeof(*vcpu->pir_desc), meta, err, done);

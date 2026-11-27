@@ -80,6 +80,7 @@
 #define	MARCHID_UCB_BOOM	MARCHID_OPENSOURCE(2)
 #define	MARCHID_UCB_SPIKE	MARCHID_OPENSOURCE(5)
 #define	MARCHID_UCAM_RVBS	MARCHID_OPENSOURCE(10)
+#define	MARCHID_QEMU		MARCHID_OPENSOURCE(42)
 
 /* SiFive marchid values */
 #define	MARCHID_SIFIVE_U7	MARCHID_COMMERCIAL(7)
@@ -87,6 +88,10 @@
 
 /* SpacemiT marchid values */
 #define	MARCHID_SPACEMIT_K1	MARCHID_COMMERCIAL(0x58000001)
+
+/* T-Head marchid values */
+#define	MARCHID_THEAD_C908	MARCHID_COMMERCIAL(0x09140d00)
+#define	MARCHID_THEAD_C920V2	MARCHID_COMMERCIAL(0x090c0d00)
 
 /*
  * MMU virtual-addressing modes. Support for each level implies the previous,

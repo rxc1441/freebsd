@@ -106,7 +106,7 @@ static int
 xattr_to_extattr(const char *uattrname, int *attrnamespace, char *attrname)
 {
 	char uname[LINUX_XATTR_NAME_MAX + 1], *dot;
-	size_t len, cplen;
+	size_t cplen;
 	int error;
 
 	error = copyinstr(uattrname, uname, sizeof(uname), &cplen);
@@ -121,11 +121,9 @@ xattr_to_extattr(const char *uattrname, int *attrnamespace, char *attrname)
 	for (*attrnamespace = EXTATTR_NAMESPACE_USER;
 	    *attrnamespace < nitems(extattr_namespace_names);
 	    (*attrnamespace)++) {
-		if (bcmp(uname, extattr_namespace_names[*attrnamespace],
-		    dot - uname + 1) == 0) {
-			dot++;
-			len = strlen(dot) + 1;
-			bcopy(dot, attrname, len);
+		if (strcmp(uname,
+		    extattr_namespace_names[*attrnamespace]) == 0) {
+			strlcpy(attrname, dot + 1, LINUX_XATTR_NAME_MAX + 1);
 			return (0);
 		}
 	}
@@ -153,7 +151,7 @@ listxattr(struct thread *td, struct listxattr_args *args)
 	}
 
 	if (args->size != 0)
-		sz = min(LINUX_XATTR_LIST_MAX, args->size);
+		sz = MIN(LINUX_XATTR_LIST_MAX, args->size);
 	else
 		sz = LINUX_XATTR_LIST_MAX;
 
@@ -203,6 +201,13 @@ listxattr(struct thread *td, struct listxattr_args *args)
 				error = ERANGE;
 				break;
 			}
+			KASSERT(keylen + 1 <= rs,
+			    ("%s: truncated record", __func__));
+			if (keylen + 1 > rs) {
+				printf("%s: truncated record\n", __func__);
+				error = EIO;
+				goto out;
+			}
 			++key;
 			if (args->list != NULL && args->size > 0) {
 				sprintf(attrname, "%s.%.*s", prefix, keylen, key);
@@ -215,6 +220,7 @@ listxattr(struct thread *td, struct listxattr_args *args)
 			rs -= (keylen + 1);
 		}
 	}
+out:
 	if (error == 0)
 		td->td_retval[0] = cnt;
 	free(data, M_LINUX);

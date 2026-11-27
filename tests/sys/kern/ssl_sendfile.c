@@ -25,15 +25,16 @@
  * SUCH DAMAGE.
  */
 
+#include <sys/types.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/sysctl.h>
-#include <sys/mman.h>
 #include <netinet/in.h>
 #include <fcntl.h>
-#include <stdlib.h>
 #include <poll.h>
 #include <pthread.h>
+#include <stdlib.h>
 
 #include <openssl/ssl.h>
 #include <openssl/err.h>
@@ -59,6 +60,7 @@ struct ctx {
 	off_t offset;		/* SSL_sendfile offset */
 	size_t size;		/* SSL_sendfile size */
 	bool nb;		/* SSL_sendfile mode */
+	int sbsize;		/* socket buffer size, 0 for default */
 	ossl_ssize_t sbytes;	/* SSL_sendfile returned sbytes */
 	enum {
 		INIT,
@@ -73,7 +75,7 @@ struct ctx {
 static void *server_thread(void *arg);
 
 static void
-common_init(struct ctx *c)
+common_init(struct ctx *c, int sbsize)
 {
 	char hostname[sizeof("localhost:65536")];
 	char tempname[] = "/tmp/ssl_sendfile_test.XXXXXXXXXX";
@@ -92,6 +94,7 @@ common_init(struct ctx *c)
 		atf_tc_skip("kern.ipc.tls.enable is off");
 
 	c->state = INIT;
+	c->sbsize = sbsize;
 
 	/*
 	 * Generate self signed key & certificate.
@@ -151,6 +154,9 @@ common_init(struct ctx *c)
 	ssl = c->cln = SSL_new(c->ctx);
 	ATF_REQUIRE(c->cln != NULL);
 	ATF_REQUIRE((c->cs = socket(AF_INET, SOCK_STREAM, 0)) > 0);
+	if (c->sbsize != 0)
+		ATF_REQUIRE(setsockopt(c->cs, SOL_SOCKET, SO_RCVBUF,
+		    &c->sbsize, sizeof(int)) == 0);
 	ATF_REQUIRE(connect(c->cs, (struct sockaddr *)&(struct sockaddr_in)
 	    { .sin_family = AF_INET, .sin_len = sizeof(struct sockaddr_in),
 	      .sin_addr.s_addr = htonl(INADDR_LOOPBACK), .sin_port = c->port },
@@ -185,7 +191,8 @@ common_cleanup(struct ctx *c)
 }
 
 static void *
-server_thread(void *arg) {
+server_thread(void *arg)
+{
 	struct ctx *c = arg;
 	SSL_CTX *srv;
 	SSL *ssl;
@@ -205,6 +212,9 @@ server_thread(void *arg) {
 	ATF_REQUIRE((s = socket(AF_INET, SOCK_STREAM, 0)) > 0);
 	ATF_REQUIRE(setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &(socklen_t){1},
 	     sizeof(int)) == 0);
+	if (c->sbsize != 0)
+		ATF_REQUIRE(setsockopt(s, SOL_SOCKET, SO_SNDBUF, &c->sbsize,
+		    sizeof(int)) == 0);
 	ATF_REQUIRE(bind(s, (struct sockaddr *)&sin, sizeof(sin)) == 0);
 	ATF_REQUIRE(getsockname(s, (struct sockaddr *)&sin,
 	    &(socklen_t){ sizeof(sin) }) == 0);
@@ -306,7 +316,7 @@ ATF_TC_BODY(basic, tc)
 	size_t nread;
 	int n;
 
-	common_init(&c);
+	common_init(&c, 0);
 
 	sendme(&c, 0, 0, false);
 	nread = 0;
@@ -326,7 +336,7 @@ ATF_TC_BODY(random, tc)
 	struct ctx c;
 #define	RSIZE	(256*1024)
 
-	common_init(&c);
+	common_init(&c, 0);
 
 	for (u_int i = 0; i < 10; i++) {
 		char buf[RSIZE];
@@ -348,7 +358,7 @@ ATF_TC_BODY(random, tc)
 		require_sbytes(&c, (ssize_t)expect);
 	}
 
-        common_cleanup(&c);
+	common_cleanup(&c);
 }
 
 /* Truncate the file while sendfile(2) is working on it. */
@@ -361,12 +371,7 @@ ATF_TC_BODY(truncate, tc)
 	int n;
 #define	TRUNC	(FSIZE - 1024)
 
-	common_init(&c);
-
-	ATF_REQUIRE(setsockopt(c.ss, SOL_SOCKET, SO_SNDBUF, &(int){FSIZE / 16},
-	    sizeof(int)) == 0);
-	ATF_REQUIRE(setsockopt(c.cs, SOL_SOCKET, SO_RCVBUF, &(int){FSIZE / 16},
-	    sizeof(int)) == 0);
+	common_init(&c, FSIZE / 16);
 
 	sendme(&c, 0, 0, false);
 	/* Make sure sender is waiting on the socket buffer. */
@@ -396,12 +401,7 @@ ATF_TC_BODY(grow, tc)
 	int n;
 #define	GROW	(FSIZE/2)
 
-	common_init(&c);
-
-	ATF_REQUIRE(setsockopt(c.ss, SOL_SOCKET, SO_SNDBUF, &(int){FSIZE / 16},
-	    sizeof(int)) == 0);
-	ATF_REQUIRE(setsockopt(c.cs, SOL_SOCKET, SO_RCVBUF, &(int){FSIZE / 16},
-	    sizeof(int)) == 0);
+	common_init(&c, FSIZE / 16);
 
 	sendme(&c, 0, 0, false);
 	/* Make sure sender is waiting on the socket buffer. */
@@ -439,7 +439,7 @@ ATF_TC_BODY(offset_beyond_eof, tc)
 {
 	struct ctx c;
 
-	common_init(&c);
+	common_init(&c, 0);
 
 	c.sbytes = -1;
 	sendme(&c, FSIZE + 1, 0, false);
@@ -461,34 +461,41 @@ ATF_TC_BODY(eagain_vs_eof, tc)
 {
 	struct ctx c;
 	char buf[16 * 1024];
-	ssize_t nread;
+	ssize_t nread, offset = 0;
 	int n;
 
-	common_init(&c);
+	common_init(&c, FSIZE / 16);
 
 	/*
 	 * Exercise short write due to no buffer space on non-blocking
-	 * socket.  Internall sendfile(2) returns -1 and errno == EAGAIN.
+	 * socket.  Internal sendfile(2) returns -1 and errno == EAGAIN.
 	 */
 	ATF_REQUIRE(pthread_mutex_lock(&c.mtx) == 0);
-	sendme_locked_wait(&c, 0, FSIZE, true);
-	ATF_REQUIRE(c.sbytes > 0);
+	sendme_locked_wait(&c, offset, FSIZE, true);
+	ATF_REQUIRE_MSG(c.sbytes > 0, "c.sbytes <= 0: %zd", c.sbytes);
 	ATF_REQUIRE(SSL_get_error(c.srv, c.sbytes) == 0);
 #if 0	/* see https://github.com/openssl/openssl/issues/29742 */
 	ATF_REQUIRE(BIO_should_retry(SSL_get_wbio(c.srv)));
 #endif
 
 	/*
-	 * Exercise second attempt on already full buffer.
+	 * Keep writing until both buffers are full.  May be executed just once
+	 * or may loop a few times in the case if our sending thread is slower
+	 * than loopback TCP processing.
 	 */
-	sendme_locked_wait(&c, 0, FSIZE, true);
-	ATF_REQUIRE(c.sbytes == -1);
+	do {
+		offset += c.sbytes;
+		sendme_locked_wait(&c, offset, FSIZE, true);
+#if 0	/* see https://github.com/openssl/openssl/issues/29742 */
+		ATF_REQUIRE(BIO_should_retry(SSL_get_wbio(c.srv)));
+#endif
+	} while (c.sbytes != -1);
 	ATF_REQUIRE(SSL_get_error(c.srv, c.sbytes) == SSL_ERROR_WANT_WRITE);
 	ATF_REQUIRE(BIO_should_retry(SSL_get_wbio(c.srv)));
 
 	/* Clear the buffer. */
 	nread = 0;
-	while (nread < c.sbytes &&
+	while (nread < offset &&
 	    (n = SSL_read_b(c.cln, buf, sizeof(buf))) > 0) {
 		ATF_REQUIRE(memcmp((char *)c.mfd + nread, buf, n) == 0);
 		nread += n;
@@ -503,7 +510,7 @@ ATF_TC_BODY(eagain_vs_eof, tc)
 	 * rather than asserts that this is a correct behavior.
 	 */
 	sendme_locked_wait(&c, FSIZE, 0, true);
-	ATF_REQUIRE(c.sbytes == 0);
+	ATF_REQUIRE_MSG(c.sbytes == 0, "c.sbytes != 0: %zd", c.sbytes);
 	ATF_REQUIRE(SSL_get_error(c.srv, c.sbytes) == SSL_ERROR_SYSCALL);
 #if 0	/* see https://github.com/openssl/openssl/issues/29742 */
 	ATF_REQUIRE(!BIO_should_retry(SSL_get_wbio(c.srv)));
@@ -513,7 +520,7 @@ ATF_TC_BODY(eagain_vs_eof, tc)
 	 * Exercise short write due to end of file.
 	 */
 	sendme_locked_wait(&c, FSIZE - 100, 0, true);
-	ATF_REQUIRE(c.sbytes == 100);
+	ATF_REQUIRE_MSG(c.sbytes == 100, "c.sbytes != 100: %zd", c.sbytes);
 	ATF_REQUIRE(SSL_get_error(c.srv, c.sbytes) == 0);
 #if 0	/* see https://github.com/openssl/openssl/issues/29742 */
 	ATF_REQUIRE(!BIO_should_retry(SSL_get_wbio(c.srv)));

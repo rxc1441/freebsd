@@ -3252,6 +3252,8 @@ relock:
 					mrm->r->rule_ref |= PFRULE_REFS;
 				if (s->act.rt_kif)
 					pf_kkif_mark(s->act.rt_kif);
+				if (s->orig_kif)
+					pf_kkif_mark(s->orig_kif);
 				count++;
 			}
 			PF_HASHROW_UNLOCK(ih);
@@ -9947,8 +9949,10 @@ pf_route(struct pf_krule *r, struct ifnet *oifp,
 				SDT_PROBE1(pf, ip, route_to, drop, __LINE__);
 				goto bad;
 			} else if (m0 == NULL) {
-				action = PF_DROP;
-				SDT_PROBE1(pf, ip, route_to, drop, __LINE__);
+				/*
+				 * The outbound pass sent the packet on itself
+				 * or queued it, so it is consumed, not dropped.
+				 */
 				goto done;
 			}
 			if (m0->m_len < sizeof(struct ip)) {
@@ -10291,8 +10295,10 @@ pf_route6(struct pf_krule *r, struct ifnet *oifp,
 				SDT_PROBE1(pf, ip6, route_to, drop, __LINE__);
 				goto bad;
 			} else if (m0 == NULL) {
-				action = PF_DROP;
-				SDT_PROBE1(pf, ip6, route_to, drop, __LINE__);
+				/*
+				 * The outbound pass sent the packet on itself
+				 * or queued it, so it is consumed, not dropped.
+				 */
 				goto done;
 			}
 			if (m0->m_len < sizeof(struct ip6_hdr)) {
@@ -11014,12 +11020,6 @@ pf_walk_header6(struct pf_pdesc *pd, struct ip6_hdr *h, u_short *reason)
 				REASON_SET(reason, PFRES_IPOPTIONS);
 				return (PF_DROP);
 			}
-			/* fragments may be short */
-			if (pd->fragoff != 0 && end < pd->off + sizeof(rthdr)) {
-				pd->off = pd->fragoff;
-				pd->proto = IPPROTO_FRAGMENT;
-				return (PF_PASS);
-			}
 			if (!pf_pull_hdr(pd->m, pd->off, &rthdr, sizeof(rthdr),
 			    reason, AF_INET6)) {
 				DPFPRINTF(PF_DEBUG_MISC, "IPv6 short rthdr");
@@ -11046,12 +11046,6 @@ pf_walk_header6(struct pf_pdesc *pd, struct ip6_hdr *h, u_short *reason)
 				DPFPRINTF(PF_DEBUG_MISC, "IPv6 short exthdr");
 				return (PF_DROP);
 			}
-			/* fragments may be short */
-			if (pd->fragoff != 0 && end < pd->off + sizeof(ext)) {
-				pd->off = pd->fragoff;
-				pd->proto = IPPROTO_FRAGMENT;
-				return (PF_PASS);
-			}
 			/* reassembly needs the ext header before the frag */
 			if (pd->fragoff == 0)
 				pd->extoff = pd->off;
@@ -11066,11 +11060,6 @@ pf_walk_header6(struct pf_pdesc *pd, struct ip6_hdr *h, u_short *reason)
 			else
 				extlen = (ext.ip6e_len + 1) * 8;
 			if (end < pd->off + extlen) {
-				if (pd->fragoff != 0) {
-					pd->off = pd->fragoff;
-					pd->proto = IPPROTO_FRAGMENT;
-					return (PF_PASS);
-				}
 				DPFPRINTF(PF_DEBUG_MISC, "IPv6 long exthdr");
 				REASON_SET(reason, PFRES_SHORT);
 				return (PF_DROP);
@@ -11079,12 +11068,6 @@ pf_walk_header6(struct pf_pdesc *pd, struct ip6_hdr *h, u_short *reason)
 			pd->proto = ext.ip6e_nxt;
 			break;
 		case IPPROTO_ICMPV6:
-			/* fragments may be short, ignore inner header then */
-			if (pd->fragoff != 0 && end < pd->off + sizeof(icmp6)) {
-				pd->off = pd->fragoff;
-				pd->proto = IPPROTO_FRAGMENT;
-				return (PF_PASS);
-			}
 			if (!pf_pull_hdr(pd->m, pd->off, &icmp6, sizeof(icmp6),
 				reason, AF_INET6)) {
 				DPFPRINTF(PF_DEBUG_MISC,
@@ -11125,14 +11108,19 @@ pf_walk_header6(struct pf_pdesc *pd, struct ip6_hdr *h, u_short *reason)
 		case IPPROTO_TCP:
 		case IPPROTO_UDP:
 		case IPPROTO_SCTP:
-			/* fragments may be short, ignore inner header then */
-			if (pd->fragoff != 0 && end < pd->off +
+			/* If we don't have a full header */
+			if (end < pd->off +
 			    (pd->proto == IPPROTO_TCP ? sizeof(struct tcphdr) :
 			    pd->proto == IPPROTO_UDP ? sizeof(struct udphdr) :
 			    pd->proto == IPPROTO_SCTP ? sizeof(struct sctphdr) :
 			    sizeof(struct icmp6_hdr))) {
-				pd->off = pd->fragoff;
-				pd->proto = IPPROTO_FRAGMENT;
+				/*
+				 * The first fragment must contain a full header..
+				 * See RFC 7112 Section 5 and
+				 * RFC 8200 Section 4.5
+				 */
+				REASON_SET(reason, PFRES_SHORT);
+				return (PF_DROP);
 			}
 			/* FALLTHROUGH */
 		default:

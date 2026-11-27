@@ -819,6 +819,8 @@
         ..
         compat32
         ..
+        cpuctl
+        ..
         devrandom
         ..
         dtrace
@@ -896,6 +898,8 @@
         kqueue
             libkqueue
             ..
+        ..
+        libkern
         ..
         mac
             bsdextended
@@ -986,6 +990,8 @@
             ..
         ..
         pmc
+            amd
+            ..
         ..
         posixshm
         ..
@@ -1319,8 +1325,12 @@
         ..
         praudit
         ..
+        pkg
+        ..
         pw
         ..
+	pwd_mkdb
+	..
         quot
         ..
         rpcbind
